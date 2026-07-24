@@ -31,6 +31,7 @@ class DishellManager:
 
         await asyncio.gather(
             self.read_agy_stdout(),
+            self.read_local_stdin(),
             client.start(TOKEN)
         )
 
@@ -45,6 +46,31 @@ class DishellManager:
 
         print("[Dishell] agy process terminated.")
         await client.close()
+
+    async def read_local_stdin(self):
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            
+            text = line.decode('utf-8').strip()
+            
+            if text == "/rc on":
+                self.rc_enabled = True
+                print("\n[Dishell] Remote control enabled. Connected to Discord DM.\n")
+            elif text == "/rc off":
+                self.rc_enabled = False
+                print("\n[Dishell] Remote control disabled.\n")
+            else:
+                # Forward to agy
+                if self.agy_process and self.agy_process.stdin:
+                    self.agy_process.stdin.write(line)
+                    await self.agy_process.stdin.drain()
 
 manager = DishellManager()
 
