@@ -18,9 +18,33 @@ client = discord.Client(intents=intents)
 class DishellManager:
     def __init__(self):
         self.rc_enabled = False
+        self.agy_process = None
 
     async def start(self):
-        await client.start(TOKEN)
+        # Start agy process
+        self.agy_process = await asyncio.create_subprocess_exec(
+            'agy',
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        await asyncio.gather(
+            self.read_agy_stdout(),
+            client.start(TOKEN)
+        )
+
+    async def read_agy_stdout(self):
+        while True:
+            line = await self.agy_process.stdout.readline()
+            if not line:
+                break
+            text = line.decode('utf-8', errors='replace')
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
+        print("[Dishell] agy process terminated.")
+        await client.close()
 
 manager = DishellManager()
 
