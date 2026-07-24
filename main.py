@@ -105,13 +105,13 @@ class DishellManager:
                     # Wait a bit for bot to be ready before notifying
                     await asyncio.sleep(2)
                     print("[Dishell] Remote control enabled. Connected to Discord DM.\n")
-                    await self.notify_discord("🟢 **Remote Control Enabled**\nYou are now connected to the local Antigravity CLI session.")
+                    await self.notify_discord("🟢 **Remote Control Enabled**\nYou are now connected to the local Antigravity CLI session.", is_error=False)
                 else:
                     print("\n[Dishell] Remote control is already enabled.\n")
             elif text == "/rc off":
                 if self.rc_enabled:
                     self.rc_enabled = False
-                    await self.notify_discord("🔴 **Remote Control Disabled**")
+                    await self.notify_discord("🔴 **Remote Control Disabled**", is_error=True)
                     print("\n[Dishell] Stopping Discord Bot...\n")
                     if self.client:
                         await self.client.close()
@@ -128,13 +128,15 @@ class DishellManager:
                     self.agy_process.stdin.write(line)
                     await self.agy_process.stdin.drain()
 
-    async def notify_discord(self, message):
+    async def notify_discord(self, message, is_error=False):
         if not USER_ID or not self.client:
             return
         try:
             user = await self.client.fetch_user(USER_ID)
             if user:
-                await user.send(message)
+                color = discord.Color.red() if is_error else discord.Color.green()
+                embed = discord.Embed(description=message, color=color)
+                await user.send(embed=embed)
         except Exception as e:
             print(f"\n[Dishell] Failed to send Discord notification: {e}\n")
 
@@ -156,7 +158,12 @@ class DishellManager:
                 try:
                     user = await self.client.fetch_user(USER_ID)
                     if user:
-                        await user.send(f"```text\n{chunk}\n```")
+                        embed = discord.Embed(
+                            title="Terminal Output",
+                            description=f"```text\n{chunk}\n```",
+                            color=discord.Color.blue()
+                        )
+                        await user.send(embed=embed)
                 except Exception as e:
                     print(f"\n[Dishell] Discord API error: {e}\n")
 

@@ -1,6 +1,6 @@
-# dishell (Discord Antigravity Remote Shell)
+# discord-agy-remote
 
-**dishell**은 로컬 환경에서 실행 중인 Antigravity CLI(`agy`) 세션을 디스코드 개인 메시지(DM)를 통해 원격 제어 및 모니터링할 수 있도록 지원하는 셀프 호스팅 에이전트 브릿지입니다.
+**discord-agy-remote**은 로컬 환경에서 실행 중인 Antigravity CLI(`agy`) 세션을 디스코드 개인 메시지(DM)를 통해 원격 제어 및 모니터링할 수 있도록 지원하는 셀프 호스팅 에이전트 브릿지입니다.
 
 기존 `agy` CLI의 워크플로우를 방해하지 않으며, 필요 시점에만 디스코드 봇을 동적으로 구동하여 리소스 낭비 없이 양방향 통신(Bidirectional I/O)을 제공합니다.
 
