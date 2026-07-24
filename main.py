@@ -21,11 +21,15 @@ class DishellManager:
         self.agy_process = None
         self.output_buffer = ""
         self.buffer_lock = asyncio.Lock()
+        self.bot_task = None
 
     async def start(self):
+        # Forward sys.argv to agy
+        args = sys.argv[1:]
+        
         # Start agy process
         self.agy_process = await asyncio.create_subprocess_exec(
-            'agy',
+            'agy', *args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -36,7 +40,6 @@ class DishellManager:
             self.read_agy_stdout(),
             self.read_local_stdin(),
             self.flush_buffer_task(),
-            client.start(TOKEN)
         )
 
     async def read_agy_stdout(self):
@@ -55,7 +58,8 @@ class DishellManager:
                     self.output_buffer += text
 
         print("[Dishell] agy process terminated.")
-        await client.close()
+        if self.bot_task:
+            await client.close()
 
     async def read_local_stdin(self):
         loop = asyncio.get_running_loop()
@@ -71,13 +75,28 @@ class DishellManager:
             text = line.decode('utf-8').strip()
             
             if text == "/rc on":
-                self.rc_enabled = True
-                print("\n[Dishell] Remote control enabled. Forwarding output to Discord DM.\n")
-                await self.notify_discord("🟢 **Remote Control Enabled**\nYou are now connected to the local Antigravity CLI session.")
+                if not self.rc_enabled:
+                    self.rc_enabled = True
+                    print("\n[Dishell] Starting Discord Bot...\n")
+                    self.bot_task = asyncio.create_task(client.start(TOKEN))
+                    # Wait a bit for bot to be ready before notifying
+                    await asyncio.sleep(2)
+                    print("[Dishell] Remote control enabled. Connected to Discord DM.\n")
+                    await self.notify_discord("🟢 **Remote Control Enabled**\nYou are now connected to the local Antigravity CLI session.")
+                else:
+                    print("\n[Dishell] Remote control is already enabled.\n")
             elif text == "/rc off":
-                self.rc_enabled = False
-                print("\n[Dishell] Remote control disabled.\n")
-                await self.notify_discord("🔴 **Remote Control Disabled**")
+                if self.rc_enabled:
+                    self.rc_enabled = False
+                    await self.notify_discord("🔴 **Remote Control Disabled**")
+                    print("\n[Dishell] Stopping Discord Bot...\n")
+                    await client.close()
+                    if self.bot_task:
+                        self.bot_task.cancel()
+                        self.bot_task = None
+                    print("[Dishell] Remote control disabled.\n")
+                else:
+                    print("\n[Dishell] Remote control is already disabled.\n")
             else:
                 # Forward to agy
                 if self.agy_process and self.agy_process.stdin:
