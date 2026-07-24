@@ -13,7 +13,28 @@ USER_ID = int(USER_ID_STR) if USER_ID_STR.isdigit() else 0
 intents = discord.Intents.default()
 intents.message_content = True
 
-client = discord.Client(intents=intents)
+class DishellBot(discord.Client):
+    def __init__(self, manager, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.manager = manager
+
+    async def on_ready(self):
+        print(f"\n[Dishell] Discord Bot logged in as {self.user}")
+
+    async def on_message(self, message):
+        if message.author == self.user:
+            return
+        
+        # Check if DM and authorized user
+        if isinstance(message.channel, discord.DMChannel) and message.author.id == USER_ID:
+            if self.manager.rc_enabled and self.manager.agy_process:
+                input_line = message.content + "\n"
+                self.manager.agy_process.stdin.write(input_line.encode('utf-8'))
+                await self.manager.agy_process.stdin.drain()
+                
+                # Optionally echo it to local console
+                sys.stdout.write(f"[Discord RC] {input_line}")
+                sys.stdout.flush()
 
 class DishellManager:
     def __init__(self):
@@ -22,6 +43,7 @@ class DishellManager:
         self.output_buffer = ""
         self.buffer_lock = asyncio.Lock()
         self.bot_task = None
+        self.client = None
 
     async def start(self):
         # Forward sys.argv to agy
@@ -58,8 +80,8 @@ class DishellManager:
                     self.output_buffer += text
 
         print("[Dishell] agy process terminated.")
-        if self.bot_task:
-            await client.close()
+        if self.bot_task and self.client:
+            await self.client.close()
 
     async def read_local_stdin(self):
         loop = asyncio.get_running_loop()
@@ -78,7 +100,8 @@ class DishellManager:
                 if not self.rc_enabled:
                     self.rc_enabled = True
                     print("\n[Dishell] Starting Discord Bot...\n")
-                    self.bot_task = asyncio.create_task(client.start(TOKEN))
+                    self.client = DishellBot(manager=self, intents=intents)
+                    self.bot_task = asyncio.create_task(self.client.start(TOKEN))
                     # Wait a bit for bot to be ready before notifying
                     await asyncio.sleep(2)
                     print("[Dishell] Remote control enabled. Connected to Discord DM.\n")
@@ -90,7 +113,9 @@ class DishellManager:
                     self.rc_enabled = False
                     await self.notify_discord("🔴 **Remote Control Disabled**")
                     print("\n[Dishell] Stopping Discord Bot...\n")
-                    await client.close()
+                    if self.client:
+                        await self.client.close()
+                        self.client = None
                     if self.bot_task:
                         self.bot_task.cancel()
                         self.bot_task = None
@@ -104,10 +129,10 @@ class DishellManager:
                     await self.agy_process.stdin.drain()
 
     async def notify_discord(self, message):
-        if not USER_ID:
+        if not USER_ID or not self.client:
             return
         try:
-            user = await client.fetch_user(USER_ID)
+            user = await self.client.fetch_user(USER_ID)
             if user:
                 await user.send(message)
         except Exception as e:
@@ -127,35 +152,15 @@ class DishellManager:
                 chunk = self.output_buffer[:1900]
                 self.output_buffer = self.output_buffer[len(chunk):]
 
-            if chunk.strip() and USER_ID:
+            if chunk.strip() and USER_ID and self.client:
                 try:
-                    user = await client.fetch_user(USER_ID)
+                    user = await self.client.fetch_user(USER_ID)
                     if user:
                         await user.send(f"```text\n{chunk}\n```")
                 except Exception as e:
                     print(f"\n[Dishell] Discord API error: {e}\n")
 
 manager = DishellManager()
-
-@client.event
-async def on_ready():
-    print(f"\n[Dishell] Discord Bot logged in as {client.user}")
-
-@client.event
-async def on_message(message):
-    if message.author == client.user:
-        return
-    
-    # Check if DM and authorized user
-    if isinstance(message.channel, discord.DMChannel) and message.author.id == USER_ID:
-        if manager.rc_enabled and manager.agy_process:
-            input_line = message.content + "\n"
-            manager.agy_process.stdin.write(input_line.encode('utf-8'))
-            await manager.agy_process.stdin.drain()
-            
-            # Optionally echo it to local console
-            sys.stdout.write(f"[Discord RC] {input_line}")
-            sys.stdout.flush()
 
 if __name__ == "__main__":
     if not TOKEN:
