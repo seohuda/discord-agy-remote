@@ -60,6 +60,7 @@ class DishellManager:
         self._writer_armed = False
         self._debug_path = os.getenv("DISHELL_DEBUG", "")
         self._status_shown = False
+        self._sticky_text = ""
 
     def _debug(self, message: str) -> None:
         """Append a diagnostic line when DISHELL_DEBUG points at a file."""
@@ -123,6 +124,8 @@ class DishellManager:
         if not data:
             return
         self.local.write(data)
+        if self._sticky_text:
+            self.local.status(self._sticky_text)  # agy just repainted over it
         if self.rc_enabled:
             self.screen.feed(data)
 
@@ -138,6 +141,7 @@ class DishellManager:
             self._finish()
             return
 
+        self._clear_sticky()
         forward, commands = self.filter.feed(data)
         self._debug(
             f"stdin={data!r} -> agy={forward!r} held={self.filter.pending!r} cmds={commands}"
@@ -146,6 +150,22 @@ class DishellManager:
         self._show_pending(self.filter.pending)
         for command in commands:
             asyncio.create_task(self._handle_local_command(command))
+
+    def _sticky(self, text: str) -> None:
+        """Show a message that survives agy's repaints.
+
+        Plain notices are wiped the moment agy redraws, which is exactly what
+        happens right after a failed ``/rc on`` -- so failures were invisible.
+        """
+        self._sticky_text = text
+        self.local.status(text)
+        self._status_shown = True
+
+    def _clear_sticky(self) -> None:
+        if self._sticky_text:
+            self._sticky_text = ""
+            self.local.status()
+            self._status_shown = False
 
     def _show_pending(self, pending: bytes) -> None:
         """Echo a local command while it is being withheld from agy."""
@@ -220,14 +240,30 @@ class DishellManager:
         self.local.notice("[Dishell] 디스코드 봇 연결 중...")
         self.client = DishellBot(manager=self)
         self.bot_task = asyncio.create_task(self.client.start(self.token))
-        try:
-            await asyncio.wait_for(self.client.wait_until_ready(), READY_TIMEOUT)
-        except asyncio.TimeoutError:
-            self.local.notice("[Dishell] 디스코드 연결 실패 (시간 초과). 토큰을 확인하세요.")
-            await self._stop_bot()
-            return
-        except Exception as exc:  # invalid token, network failure, ...
-            self.local.notice(f"[Dishell] 디스코드 연결 실패: {exc}")
+
+        # Race readiness against the login task: a bad token makes start()
+        # raise, and waiting only on wait_until_ready() would sit out the full
+        # timeout and then report "시간 초과" instead of the real reason.
+        ready = asyncio.create_task(self.client.wait_until_ready())
+        done, _ = await asyncio.wait(
+            {ready, self.bot_task},
+            timeout=READY_TIMEOUT,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if ready not in done:
+            ready.cancel()
+            reason = "시간 초과 (네트워크 또는 토큰 확인)"
+            if self.bot_task in done:
+                exc = self.bot_task.exception()
+                if isinstance(exc, discord.LoginFailure):
+                    reason = "토큰이 거부되었습니다. 포털에서 Reset Token 후 .env 갱신"
+                elif isinstance(exc, discord.PrivilegedIntentsRequired):
+                    reason = "포털에서 MESSAGE CONTENT INTENT 를 켜야 합니다"
+                elif exc is not None:
+                    reason = f"{type(exc).__name__}: {exc}"
+            self._sticky(f"[Dishell] 디스코드 연결 실패 · {reason}")
+            self._debug(f"start_bot failed: {reason}")
             await self._stop_bot()
             return
 
@@ -236,6 +272,7 @@ class DishellManager:
         if not await self._notify(
             "🟢 **원격 제어 시작** — 이 DM으로 로컬 agy 세션을 조작합니다. `/help` 로 사용법 확인."
         ):
+            self._sticky("[Dishell] 연결됐지만 DM 을 보낼 수 없습니다 · 위 안내 참고")
             await self._stop_bot()
             return
 
