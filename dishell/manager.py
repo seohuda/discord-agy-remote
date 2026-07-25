@@ -425,7 +425,9 @@ class DishellManager:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                import traceback
                 self.local.notice(f"[Dishell] 화면 전송 오류: {exc}")
+                self.local.notice(traceback.format_exc())
 
     async def _publish(self, snapshot: str, history_lines: list[str] = None) -> None:
         user = await self._get_user()
