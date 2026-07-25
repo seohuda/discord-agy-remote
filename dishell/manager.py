@@ -59,6 +59,7 @@ class DishellManager:
         self._backlog = bytearray()
         self._writer_armed = False
         self._debug_path = os.getenv("DISHELL_DEBUG", "")
+        self._status_shown = False
 
     def _debug(self, message: str) -> None:
         """Append a diagnostic line when DISHELL_DEBUG points at a file."""
@@ -142,8 +143,19 @@ class DishellManager:
             f"stdin={data!r} -> agy={forward!r} held={self.filter.pending!r} cmds={commands}"
         )
         self._write_to_agy(forward)
+        self._show_pending(self.filter.pending)
         for command in commands:
             asyncio.create_task(self._handle_local_command(command))
+
+    def _show_pending(self, pending: bytes) -> None:
+        """Echo a local command while it is being withheld from agy."""
+        if pending:
+            text = pending.decode("utf-8", errors="replace")
+            self.local.status(f"[Dishell] {text}")
+            self._status_shown = True
+        elif self._status_shown:
+            self.local.status()
+            self._status_shown = False
 
     def _write_to_agy(self, data: bytes) -> None:
         """Queue ``data`` for agy, retrying whatever the PTY could not take."""

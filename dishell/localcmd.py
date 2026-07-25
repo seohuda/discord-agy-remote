@@ -11,11 +11,17 @@ to erase from its input box.
 COMMANDS = ("/rc on", "/rc off", "/rc status")
 
 _ENTER = (0x0D, 0x0A)
+_ERASE = (0x7F, 0x08)  # backspace / delete
+_KILL_LINE = 0x15  # ctrl-u
+_INTERRUPT = 0x03  # ctrl-c
 
 
 class LocalCommandFilter:
     def __init__(self, commands=COMMANDS):
         self.commands = tuple(c.lower() for c in commands)
+        # "/rc" -- once input starts with this it cannot be an agy command,
+        # so it is held to the end of the line even if it is mistyped.
+        self._roots = tuple({c.split()[0] for c in self.commands})
         self._held = bytearray()
 
     @property
@@ -23,10 +29,17 @@ class LocalCommandFilter:
         """Bytes currently held back from agy."""
         return bytes(self._held)
 
-    def _is_prefix(self) -> bool:
-        # Stripped, so trailing spaces after a complete command stay held.
+    def _is_candidate(self) -> bool:
+        """Whether the held text could still be a local command.
+
+        True while it is being spelled out (``/r``) and, once the ``/rc``
+        prefix is complete, for the rest of the line -- so a typo is corrected
+        in place rather than dumped into agy's input box.
+        """
         text = self._held.decode("utf-8", errors="replace").strip().lower()
-        return any(c.startswith(text) for c in self.commands)
+        return any(
+            root.startswith(text) or text.startswith(root) for root in self._roots
+        )
 
     def feed(self, data: bytes) -> tuple[bytes, list[str]]:
         """Split ``data`` into bytes for agy and completed local commands."""
@@ -41,6 +54,21 @@ class LocalCommandFilter:
                     forward.append(byte)
                 continue
 
+            # Held bytes never reached agy, so editing them must not either --
+            # forwarding an erase here would delete agy's own input instead.
+            if byte in _ERASE:
+                self._held.pop()
+                continue
+
+            if byte == _KILL_LINE:
+                self._held.clear()
+                continue
+
+            if byte == _INTERRUPT:
+                self._held.clear()
+                forward.append(byte)
+                continue
+
             if byte in _ENTER:
                 text = self._held.decode("utf-8", errors="replace").strip().lower()
                 if text in self.commands:
@@ -52,7 +80,7 @@ class LocalCommandFilter:
                 continue
 
             self._held.append(byte)
-            if not self._is_prefix():
+            if not self._is_candidate():
                 forward += self._held
                 self._held.clear()
 

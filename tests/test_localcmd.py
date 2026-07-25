@@ -56,10 +56,44 @@ def test_divergence_releases_the_held_bytes_before_the_newline():
     assert out == b"/re"  # "/re" cannot be a command, release immediately
 
 
-def test_slash_followed_by_backspace_is_released():
-    forwarded, commands, _ = feed_all("/\x7f")
-    assert forwarded == b"/\x7f"
+def test_backspace_edits_the_held_buffer_instead_of_dumping_it():
+    """The held text never reached agy, so erasing it must not reach agy."""
+    forwarded, commands, filt = feed_all("/rc on\x7f\x7f")
+    assert forwarded == b""
     assert commands == []
+    assert filt.pending == b"/rc "
+
+
+def test_a_command_retyped_after_a_correction_still_fires():
+    forwarded, commands, _ = feed_all("/rc onn\x7f\r")
+    assert forwarded == b""
+    assert commands == ["/rc on"]
+
+
+def test_erasing_past_the_slash_leaves_nothing_behind():
+    forwarded, commands, filt = feed_all("/rc\x7f\x7f\x7f")
+    assert forwarded == b""
+    assert commands == []
+    assert filt.pending == b""
+
+
+def test_backspace_with_nothing_held_reaches_agy_normally():
+    forwarded, _, _ = feed_all("ab\x7f")
+    assert forwarded == b"ab\x7f"
+
+
+def test_ctrl_u_abandons_a_half_typed_command():
+    forwarded, commands, filt = feed_all("/rc o\x15")
+    assert forwarded == b""
+    assert commands == []
+    assert filt.pending == b""
+
+
+def test_ctrl_c_abandons_the_command_but_still_interrupts_agy():
+    forwarded, commands, filt = feed_all("/rc o\x03")
+    assert forwarded == b"\x03"
+    assert commands == []
+    assert filt.pending == b""
 
 
 def test_partial_command_without_enter_is_not_executed():

@@ -157,6 +157,24 @@ class LocalTerminal:
         except OSError:
             pass
 
+    def status(self, text: str = "") -> None:
+        """Draw a one-line status on the bottom row, leaving the cursor alone.
+
+        Local commands are withheld from agy while they are being typed, so
+        without this the keystrokes would vanish and look like a dead session.
+        """
+        if not self.is_tty:
+            return
+        cols, rows = self.size()
+        payload = text[: max(cols - 1, 0)].encode("utf-8")
+        self.write(
+            b"\x1b7"                       # save cursor
+            + f"\x1b[{rows};1H".encode()   # bottom row
+            + b"\x1b[2K"                   # clear it
+            + payload
+            + b"\x1b8"                     # restore cursor
+        )
+
     def notice(self, text: str) -> None:
         """Print a wrapper message on its own line without the tty's echo."""
         self.write(b"\r\n" + text.encode("utf-8") + b"\r\n")
