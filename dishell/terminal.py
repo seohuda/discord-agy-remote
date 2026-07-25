@@ -122,6 +122,20 @@ class PtyProcess:
             self.master_fd = None
 
 
+def effective_size(terminal_size, remote_cols: int, remote_active: bool):
+    """Pick the size agy should render at.
+
+    Discord's code block wraps at roughly 60 columns, so a normal 100-column
+    TUI arrives with every separator and footer folded onto a second line.
+    While remote control is on, agy is asked to draw narrower; the local
+    terminal simply leaves the extra columns unused.
+    """
+    cols, rows = terminal_size
+    if remote_active and remote_cols > 0:
+        cols = min(remote_cols, cols)
+    return max(cols, 20), rows
+
+
 class LocalTerminal:
     """The user's own terminal: raw mode, size, and resize notifications."""
 

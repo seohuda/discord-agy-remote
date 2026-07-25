@@ -12,9 +12,11 @@ from .bot import DishellBot
 from .commands import parse_remote_message
 from .localcmd import LocalCommandFilter
 from .screen import TerminalScreen, render_for_discord
-from .terminal import LocalTerminal, PtyProcess
+from .terminal import LocalTerminal, PtyProcess, effective_size
 
 PUBLISH_INTERVAL = 1.5
+# Discord's code block folds past roughly this width.
+DEFAULT_REMOTE_COLS = 60
 READY_TIMEOUT = 20.0
 
 ALERT_HEADERS = {
@@ -28,6 +30,11 @@ FORBIDDEN_HELP = (
     "  · 서버의 개인정보 설정에서 '서버 멤버가 보내는 DM 허용'을 켜주세요.\n"
     "  · DISCORD_USER_ID 가 본인 ID가 맞는지 확인하세요."
 )
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    return int(raw) if raw.lstrip("-").isdigit() else default
 
 
 class DishellManager:
@@ -61,6 +68,7 @@ class DishellManager:
         self._debug_path = os.getenv("DISHELL_DEBUG", "")
         self._status_shown = False
         self._sticky_text = ""
+        self.remote_cols = _int_env("DISHELL_COLS", DEFAULT_REMOTE_COLS)
 
     def _debug(self, message: str) -> None:
         """Append a diagnostic line when DISHELL_DEBUG points at a file."""
@@ -199,15 +207,22 @@ class DishellManager:
                 self._loop.remove_writer(self.pty.master_fd)
             self._writer_armed = False
 
-    def _on_resize(self) -> None:
-        cols, rows = self.local.size()
+    def _size(self) -> tuple[int, int]:
+        return effective_size(self.local.size(), self.remote_cols, self.rc_enabled)
+
+    def _apply_size(self) -> None:
+        cols, rows = self._size()
         self.pty.set_winsize(cols, rows)
         self.screen.resize(cols, rows)
+        self._debug(f"size -> {cols}x{rows} (rc={self.rc_enabled})")
+
+    def _on_resize(self) -> None:
+        self._apply_size()
 
     async def _force_repaint(self) -> None:
         """Nudge agy into redrawing, so the wrapper's own output is cleaned up
         and the emulated screen is populated straight after ``/rc on``."""
-        cols, rows = self.local.size()
+        cols, rows = self._size()
         self.pty.set_winsize(cols, max(rows - 1, 1))
         await asyncio.sleep(0.05)
         self.pty.set_winsize(cols, rows)
@@ -277,6 +292,8 @@ class DishellManager:
             return
 
         self.rc_enabled = True
+        # Narrow agy so its lines survive Discord's code block width.
+        self._apply_size()
         self.detector = AlertDetector()
         self._last_snapshot = None
         self._live_message = None
@@ -288,7 +305,10 @@ class DishellManager:
     async def _stop_bot(self, announce: str | None = None) -> None:
         if announce and self.rc_enabled:
             await self._notify(announce, color=discord.Color.red())
+        was_enabled = self.rc_enabled
         self.rc_enabled = False
+        if was_enabled:
+            self._apply_size()  # give the local terminal its full width back
 
         if self.publish_task:
             self.publish_task.cancel()
