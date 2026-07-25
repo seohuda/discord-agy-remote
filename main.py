@@ -1,180 +1,48 @@
+#!/usr/bin/env python3
+"""Entry point: run agy under a PTY and optionally bridge it to Discord DMs."""
+
 import asyncio
 import os
 import sys
-import discord
+
 from dotenv import load_dotenv
 
-load_dotenv()
+from dishell.manager import DishellManager
 
-TOKEN = os.getenv('DISCORD_TOKEN')
-USER_ID_STR = os.getenv('DISCORD_USER_ID', '')
-USER_ID = int(USER_ID_STR) if USER_ID_STR.isdigit() else 0
+AGY_BIN = os.getenv("DISHELL_AGY_BIN", "agy")
+GUARD = "DISHELL_WRAPPED"
 
-intents = discord.Intents.default()
-intents.message_content = True
 
-class DishellBot(discord.Client):
-    def __init__(self, manager, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.manager = manager
+def main() -> int:
+    args = sys.argv[1:]
 
-    async def on_ready(self):
-        print(f"\n[Dishell] Discord Bot logged in as {self.user}")
+    # If the wrapper somehow ends up invoking itself (a PATH shim rather than a
+    # shell alias), hand straight over to the real agy instead of recursing.
+    if os.environ.get(GUARD):
+        os.execvp(AGY_BIN, [AGY_BIN, *args])
 
-    async def on_message(self, message):
-        if message.author == self.user:
-            return
-        
-        # Check if DM and authorized user
-        if isinstance(message.channel, discord.DMChannel) and message.author.id == USER_ID:
-            if self.manager.rc_enabled and self.manager.agy_process:
-                input_line = message.content + "\n"
-                self.manager.agy_process.stdin.write(input_line.encode('utf-8'))
-                await self.manager.agy_process.stdin.drain()
-                
-                # Optionally echo it to local console
-                sys.stdout.write(f"[Discord RC] {input_line}")
-                sys.stdout.flush()
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    os.environ[GUARD] = "1"
 
-class DishellManager:
-    def __init__(self):
-        self.rc_enabled = False
-        self.agy_process = None
-        self.output_buffer = ""
-        self.buffer_lock = asyncio.Lock()
-        self.bot_task = None
-        self.client = None
+    token = os.getenv("DISCORD_TOKEN", "").strip()
+    user_id_raw = os.getenv("DISCORD_USER_ID", "").strip()
+    user_id = int(user_id_raw) if user_id_raw.isdigit() else 0
 
-    async def start(self):
-        # Forward sys.argv to agy
-        args = sys.argv[1:]
-        
-        # Start agy process
-        self.agy_process = await asyncio.create_subprocess_exec(
-            'agy', *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+    if not token or not user_id:
+        # agy still has to work; only the remote bridge is unavailable.
+        sys.stderr.write(
+            "[Dishell] DISCORD_TOKEN / DISCORD_USER_ID 가 없어 '/rc on' 은 동작하지 않습니다.\n"
         )
 
-        # Run concurrent tasks
-        await asyncio.gather(
-            self.read_agy_stdout(),
-            self.read_local_stdin(),
-            self.flush_buffer_task(),
-        )
+    manager = DishellManager(token=token, user_id=user_id, argv=[AGY_BIN, *args])
+    try:
+        return asyncio.run(manager.run())
+    except KeyboardInterrupt:
+        return 130
+    except FileNotFoundError:
+        sys.stderr.write(f"[Dishell] '{AGY_BIN}' 를 찾을 수 없습니다. PATH를 확인하세요.\n")
+        return 127
 
-    async def read_agy_stdout(self):
-        while True:
-            line = await self.agy_process.stdout.readline()
-            if not line:
-                break
-            text = line.decode('utf-8', errors='replace')
-            # Print to local console
-            sys.stdout.write(text)
-            sys.stdout.flush()
-
-            # Buffer for discord
-            if self.rc_enabled:
-                async with self.buffer_lock:
-                    self.output_buffer += text
-
-        print("[Dishell] agy process terminated.")
-        if self.bot_task and self.client:
-            await self.client.close()
-
-    async def read_local_stdin(self):
-        loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-
-        while True:
-            line = await reader.readline()
-            if not line:
-                break
-            
-            text = line.decode('utf-8').strip()
-            
-            if text == "/rc on":
-                if not self.rc_enabled:
-                    self.rc_enabled = True
-                    print("\n[Dishell] Starting Discord Bot...\n")
-                    self.client = DishellBot(manager=self, intents=intents)
-                    self.bot_task = asyncio.create_task(self.client.start(TOKEN))
-                    # Wait a bit for bot to be ready before notifying
-                    await asyncio.sleep(2)
-                    print("[Dishell] Remote control enabled. Connected to Discord DM.\n")
-                    await self.notify_discord("🟢 **Remote Control Enabled**\nYou are now connected to the local Antigravity CLI session.", is_error=False)
-                else:
-                    print("\n[Dishell] Remote control is already enabled.\n")
-            elif text == "/rc off":
-                if self.rc_enabled:
-                    self.rc_enabled = False
-                    await self.notify_discord("🔴 **Remote Control Disabled**", is_error=True)
-                    print("\n[Dishell] Stopping Discord Bot...\n")
-                    if self.client:
-                        await self.client.close()
-                        self.client = None
-                    if self.bot_task:
-                        self.bot_task.cancel()
-                        self.bot_task = None
-                    print("[Dishell] Remote control disabled.\n")
-                else:
-                    print("\n[Dishell] Remote control is already disabled.\n")
-            else:
-                # Forward to agy
-                if self.agy_process and self.agy_process.stdin:
-                    self.agy_process.stdin.write(line)
-                    await self.agy_process.stdin.drain()
-
-    async def notify_discord(self, message, is_error=False):
-        if not USER_ID or not self.client:
-            return
-        try:
-            user = await self.client.fetch_user(USER_ID)
-            if user:
-                color = discord.Color.red() if is_error else discord.Color.green()
-                embed = discord.Embed(description=message, color=color)
-                await user.send(embed=embed)
-        except Exception as e:
-            print(f"\n[Dishell] Failed to send Discord notification: {e}\n")
-
-    async def flush_buffer_task(self):
-        while True:
-            await asyncio.sleep(1.0)
-            if not self.rc_enabled:
-                continue
-            
-            async with self.buffer_lock:
-                if not self.output_buffer:
-                    continue
-                
-                # Split if larger than discord limits
-                chunk = self.output_buffer[:1900]
-                self.output_buffer = self.output_buffer[len(chunk):]
-
-            if chunk.strip() and USER_ID and self.client:
-                try:
-                    user = await self.client.fetch_user(USER_ID)
-                    if user:
-                        embed = discord.Embed(
-                            title="Terminal Output",
-                            description=f"```text\n{chunk}\n```",
-                            color=discord.Color.blue()
-                        )
-                        await user.send(embed=embed)
-                except Exception as e:
-                    print(f"\n[Dishell] Discord API error: {e}\n")
-
-manager = DishellManager()
 
 if __name__ == "__main__":
-    if not TOKEN:
-        print("Error: DISCORD_TOKEN is missing in .env")
-        sys.exit(1)
-    
-    try:
-        asyncio.run(manager.start())
-    except KeyboardInterrupt:
-        print("\n[Dishell] Shutting down...")
+    sys.exit(main())

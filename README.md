@@ -1,65 +1,138 @@
 # discord-agy-remote
 
-**discord-agy-remote**은 로컬 환경에서 실행 중인 Antigravity CLI(`agy`) 세션을 디스코드 개인 메시지(DM)를 통해 원격 제어 및 모니터링할 수 있도록 지원하는 셀프 호스팅 에이전트 브릿지입니다.
+로컬에서 실행 중인 Antigravity CLI(`agy`) 세션을 디스코드 DM으로 원격 조작하는 셀프 호스팅 브릿지입니다.
 
-기존 `agy` CLI의 워크플로우를 방해하지 않으며, 필요 시점에만 디스코드 봇을 동적으로 구동하여 리소스 낭비 없이 양방향 통신(Bidirectional I/O)을 제공합니다.
+`agy`를 의사 터미널(PTY) 위에서 실행하기 때문에, 로컬 터미널에서는 평소와 **완전히 동일한 TUI**를 그대로 사용하면서 동시에 디스코드에서도 같은 세션을 조작할 수 있습니다.
 
-## 핵심 기능 (Features)
+## 동작 방식
 
-* **Seamless Native Integration**: 설치 스크립트를 통해 시스템의 `agy` 명령어를 래핑하여, 사용자는 기존과 완전히 동일한 CLI 경험을 유지할 수 있습니다.
-* **Dynamic Bot Lifecycle**: `agy` 세션 내부에서 `/rc on` 커맨드 입력 시 디스코드 봇이 백그라운드에서 동적으로 연결되며, `/rc off` 입력 시 연결을 안전하게 해제하여 무한 루프가 가능하도록 설계되었습니다.
-* **Real-time Output Streaming**: Antigravity CLI의 `stdout`을 실시간으로 버퍼링 및 청크(Chunk) 단위로 분할하여 디스코드 DM으로 안정적으로 전송합니다.
-* **Remote Command Injection**: 디스코드 DM을 통해 전송된 메시지를 로컬 `agy` 프로세스의 `stdin`으로 즉각 파이프(Pipe) 처리하여 로컬 터미널과 동일한 수준의 제어를 지원합니다.
+```
+로컬 터미널 (raw mode)  ─┬─►  PTY master  ─►  agy (TUI, TTY 인식)
+                         │                        │
+디스코드 DM  ────────────┘                        ▼
+                                          출력 바이트
+                                                │
+                            ┌───────────────────┴────────────────┐
+                            ▼                                    ▼
+                     로컬 터미널에 그대로              헤드리스 터미널 에뮬레이터(pyte)
+                                                                 │
+                                                    화면 스냅샷 → DM 메시지 1개를 계속 edit
+```
 
-## 시스템 요구사항 (Prerequisites)
+* **PTY 기반**: `agy`는 stdin/stdout이 TTY가 아니면 TUI를 띄우지 않고 1회성 print 모드로 떨어집니다. 파이프 대신 PTY를 물려 실제 터미널로 인식시킵니다. 창 크기(`TIOCSWINSZ`)와 `SIGWINCH` 리사이즈도 그대로 전달됩니다.
+* **화면 스냅샷 전송**: TUI는 커서를 옮겨 화면을 계속 덧그리기 때문에 출력 바이트를 그대로 보내면 제어문자 범벅이 됩니다. 출력을 `pyte` 터미널 에뮬레이터에 재생해 **현재 화면 상태**만 뽑아내고, DM 메시지 하나를 계속 edit 해서 갱신합니다.
+* **상태 기반 알림**: 디스코드는 메시지 *edit*에 푸시 알림을 보내지 않습니다. 그래서 화면을 계속 edit 하기만 하면 폰에는 아무것도 울리지 않습니다. 화면을 감시해 **승인 대기 진입**과 **작업 완료** 시점에만 새 메시지를 보내 알림이 뜨게 합니다.
+* **로컬 명령 가로채기**: 로컬 터미널은 raw 모드라 줄 단위 입력이 없습니다. 입력 바이트가 `/rc ...`의 접두사인 동안만 붙잡아 두었다가, 명령이 완성되면 통째로 소비하고 아니면 즉시 `agy`로 흘려보냅니다. 덕분에 `agy` 자체 슬래시 명령(`/model` 등)은 아무 영향 없이 그대로 동작합니다.
 
-* Python 3.8 이상
-* Antigravity CLI (`agy`) 로컬 설치 환경
-* Discord 개발자 포털에서 발급받은 Bot Token 및 User ID (Intents: Message Content 활성화 필수)
+## 요구사항
 
-## 설치 가이드 (Installation)
+* Python 3.10 이상
+* Antigravity CLI(`agy`)가 PATH에 설치되어 있을 것
+* 디스코드 봇 토큰 및 본인 User ID (개발자 포털에서 **Message Content Intent** 활성화 필수)
 
-1. **레포지토리 클론 및 의존성 설치**
-   ```bash
-   git clone https://github.com/seohuda/discord-agy-remote.git
-   cd discord-agy-remote
-   pip install -r requirements.txt
-   ```
+## 설치
 
-2. **환경변수 설정**
-   루트 디렉토리의 `.env.example` 파일을 복사하여 `.env` 파일을 생성한 뒤, 발급받은 Discord 토큰과 사용자의 고유 디스코드 ID를 입력합니다.
-   ```bash
-   cp .env.example .env
-   # 이후 .env 파일 편집
-   ```
+```bash
+git clone https://github.com/seohuda/discord-agy-remote.git
+cd discord-agy-remote
+./install.sh
+source ~/.zshrc   # 또는 ~/.bashrc
+```
 
-3. **Shell Alias 등록 (Native UX 설정)**
-   제공되는 설치 스크립트를 실행하여 사용 중인 Shell 설정 파일(`~/.bashrc` 또는 `~/.zshrc`)에 `agy` Alias를 자동 등록합니다. 이 과정을 통해 래퍼 스크립트를 `agy` 명령어로 투명하게 호출할 수 있습니다.
-   ```bash
-   chmod +x install.sh
-   ./install.sh
-   source ~/.bashrc  # 또는 사용하는 쉘에 맞춰 source ~/.zshrc 적용
-   ```
+`install.sh`는 `.venv` 가상환경 생성, 의존성 설치, `.env` 생성, 셸 alias 등록까지 처리합니다.
+이후 `.env`를 열어 값을 채웁니다.
 
-## 사용법 (Usage)
+```
+DISCORD_TOKEN=봇_토큰
+DISCORD_USER_ID=본인_디스코드_유저_ID
+```
 
-1. **세션 시작**
-   터미널에서 기존처럼 `agy` 명령어를 실행하여 Antigravity CLI 세션을 시작합니다. 필요시 추가 인자를 함께 넘길 수 있습니다 (예: `agy --help`).
-   ```bash
-   agy
-   ```
+## 사용법
 
-2. **원격 제어 세션 활성화**
-   현재 구동 중인 `agy` 세션 내에서 다음 명령어를 입력하면 디스코드 봇 클라이언트가 백그라운드에서 동적으로 할당되며 연동이 시작됩니다.
-   ```text
-   /rc on
-   ```
+평소처럼 `agy`를 실행합니다. 인자도 그대로 전달됩니다 (`agy -c`, `agy --model ...`).
 
-3. **디스코드 원격 제어**
-   봇 계정의 디스코드 DM으로 지시사항이나 프롬프트를 전송하면 실시간으로 로컬 CLI 세션에 전달되며, 에이전트의 작업 로그와 결과가 DM으로 회신됩니다. CLI와 디스코드 양쪽에서 동시 조작이 가능합니다.
+```bash
+agy
+```
 
-4. **원격 제어 세션 종료**
-   연동을 중단하고 싶은 경우, 로컬 CLI 입력창에 다음 명령어를 입력하여 디스코드 봇 인스턴스를 안전하게 종료하고 리소스를 반환합니다. 
-   ```text
-   /rc off
-   ```
+세션 안에서 원격 제어를 켜고 끕니다. 이 명령은 `agy`에 전달되지 않고 래퍼가 가로챕니다.
+
+| 로컬 터미널 | 동작 |
+| --- | --- |
+| `/rc on` | 디스코드 봇 연결, 원격 제어 시작 |
+| `/rc off` | 원격 제어 종료, 봇 연결 해제 |
+| `/rc status` | 현재 상태 확인 |
+
+디스코드 DM에서 사용할 수 있는 명령입니다.
+
+| 디스코드 DM | 동작 |
+| --- | --- |
+| 아무 텍스트 | `agy` 입력창에 입력 후 전송 (여러 줄은 bracketed paste로 한 번에 입력) |
+| `/key esc` | 특수키 전송 |
+| `/key down down enter` | 여러 키 순서대로 전송 (권한 승인 프롬프트 조작용) |
+| `/rc off` | 원격에서 원격 제어 종료 |
+| `/rc status` | 세션 상태 확인 |
+| `/help` | 사용법과 키 목록 |
+| `//텍스트` | 앞 슬래시 하나를 벗겨 그대로 전송 |
+
+`/model` 처럼 `agy` 자신의 슬래시 명령은 가로채지 않고 그대로 전달됩니다.
+
+사용 가능한 키: `enter` `esc` `tab` `shift-tab` `space` `backspace` `delete` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `ctrl-a`~`ctrl-w` `y` `n`
+
+## 알림
+
+봇이 먼저 DM을 보냅니다. 말을 걸어야 응답하는 구조가 아닙니다.
+
+진행 중인 화면은 메시지 하나를 계속 edit 해서 조용히 갱신하고, 아래 두 순간에만 **새 메시지**를 보내 푸시 알림이 뜨게 합니다.
+
+| 상황 | 알림 |
+| --- | --- |
+| agy가 승인/선택 프롬프트를 띄움 | ⏸️ **입력 대기 중** |
+| 작업이 끝나고 화면이 3초 이상 조용함 | ✅ **작업 완료** |
+
+덕분에 노트북을 켜둔 채 나가 있어도, 승인이 필요한 순간에만 폰이 울립니다.
+
+감지는 agy가 실제로 출력하는 문구를 기준으로 합니다. `Do you want to proceed?`, `Allow access to this file?`, `Do you trust the contents of this project?` 같은 알려진 문구에 더해, 선택지 하단의 `↑/↓ Navigate · enter Confirm` 푸터를 일반 신호로 사용하기 때문에 목록에 없는 새 프롬프트도 잡힙니다. 작업 중 여부는 `esc to interrupt` 표시로 판단합니다.
+
+## 보안
+
+* 원격 입력은 **DM**이면서 **`DISCORD_USER_ID`와 정확히 일치하는 발신자**인 경우에만 받아들입니다. 그 외 모든 메시지는 무시합니다.
+* `DISCORD_USER_ID`가 비어 있으면 `0`이 되어 아무도 통과하지 못합니다(fail-closed).
+* 원격 제어는 사실상 로컬 셸 접근과 동등한 권한입니다. `--dangerously-skip-permissions`와 함께 쓰면 승인 없이 도구가 실행되므로 주의하세요.
+* 봇 토큰은 `.env`에 두며 `.gitignore`에 포함되어 있습니다.
+
+> **봇과 같은 서버에 한 번은 함께 있어야 합니다.** 디스코드는 상호 서버가 없는 상대에게 봇이 DM 보내는 것을 막습니다(403). 본인만 있는 서버를 하나 만들어 봇을 초대해두면 됩니다. `/rc on` 은 연결 직후 실제로 DM을 한 번 보내보고, 실패하면 원인을 로컬 터미널에 출력한 뒤 원격 제어를 켜지 않습니다.
+
+## 참고: `agy --remote-control`
+
+`agy`에는 자체 원격 제어 모드(`--remote-control`)가 내장되어 있으며, 이는 Antigravity 자체 프록시 서버를 경유하는 클라우드 방식입니다. 이 프로젝트는 그 경로를 쓰지 않고 **본인 디스코드 봇만으로 자체 호스팅**한다는 점이 다릅니다.
+
+## 개발
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest
+```
+
+| 모듈 | 역할 |
+| --- | --- |
+| `dishell/terminal.py` | PTY 생성, 로컬 터미널 raw 모드, 창 크기 전달 |
+| `dishell/screen.py` | pyte 기반 화면 에뮬레이션 및 디스코드 렌더링 |
+| `dishell/alerts.py` | 승인 대기 / 작업 완료 전이 감지 |
+| `dishell/localcmd.py` | 로컬 raw 입력에서 `/rc` 명령 가로채기 |
+| `dishell/commands.py` | 디스코드 메시지 → 동작 파싱 |
+| `dishell/bot.py` | 디스코드 클라이언트 및 발신자 인증 |
+| `dishell/manager.py` | 전체 배선, 봇 수명주기, 화면 발행 루프 |
+
+## 알려진 제약
+
+* 화면 스냅샷은 현재 화면만 보냅니다. 위로 스크롤되어 사라진 내용은 DM에 남지 않습니다.
+* 디스코드 embed 한도(4096자)를 넘는 화면은 **아래쪽(최신 부분)** 을 남기고 잘립니다.
+* 색상은 전달되지 않습니다. 코드블록 안 단색 텍스트로만 표시됩니다.
+* 화면 갱신은 1.5초 간격입니다. 디스코드 rate limit을 피하기 위한 값입니다.
+* 봇 수명이 agy 프로세스에 묶여 있습니다. **agy가 떠 있지 않으면 디스코드에서 새 세션을 시작할 수 없습니다** — 반드시 로컬에서 `agy` 실행 후 `/rc on` 을 해야 합니다.
+* 알림 감지는 화면 문구 기반이라, agy가 UI 문구를 바꾸면 `dishell/alerts.py` 의 마커를 갱신해야 할 수 있습니다.
+
+## 라이선스
+
+MIT

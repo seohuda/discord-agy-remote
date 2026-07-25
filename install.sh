@@ -1,22 +1,35 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Get absolute path to main.py
-MAIN_PY_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/main.py"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="$ROOT/.venv"
 
-# Add alias to .bashrc or .zshrc
-PROFILE_RC="$HOME/.bashrc"
-if [ -f "$HOME/.zshrc" ]; then
-    PROFILE_RC="$HOME/.zshrc"
+echo "==> Creating virtualenv at $VENV"
+[ -d "$VENV" ] || python3 -m venv "$VENV"
+"$VENV/bin/pip" install --quiet --upgrade pip
+"$VENV/bin/pip" install --quiet -r "$ROOT/requirements.txt"
+
+if [ ! -f "$ROOT/.env" ]; then
+    cp "$ROOT/.env.example" "$ROOT/.env"
+    echo "==> Created .env from .env.example — edit it and fill in your token/user id."
 fi
 
-echo "Adding 'agy' alias to $PROFILE_RC to route through dishell..."
+case "${SHELL##*/}" in
+    zsh)  PROFILE_RC="$HOME/.zshrc" ;;
+    bash) PROFILE_RC="$HOME/.bashrc" ;;
+    *)    PROFILE_RC="$HOME/.profile" ;;
+esac
 
-# Remove old alias if exists
-sed -i '/alias agy=/d' "$PROFILE_RC"
+ALIAS_LINE="alias agy='\"$VENV/bin/python\" \"$ROOT/main.py\"'"
 
-# Add new alias
-echo "alias agy='python3 \"$MAIN_PY_PATH\"'" >> "$PROFILE_RC"
+echo "==> Registering 'agy' alias in $PROFILE_RC"
+if [ -f "$PROFILE_RC" ]; then
+    # Portable in-place edit (BSD/macOS sed has no bare -i).
+    grep -v "^alias agy=" "$PROFILE_RC" > "$PROFILE_RC.dishell.tmp" || true
+    mv "$PROFILE_RC.dishell.tmp" "$PROFILE_RC"
+fi
+printf '%s\n' "$ALIAS_LINE" >> "$PROFILE_RC"
 
-echo "Installation complete! Please restart your terminal or run:"
-echo "source $PROFILE_RC"
+echo
+echo "Done. Restart your terminal or run:"
+echo "    source $PROFILE_RC"
