@@ -58,6 +58,15 @@ class DishellManager:
         self._pending_alert: str | None = None
         self._backlog = bytearray()
         self._writer_armed = False
+        self._debug_path = os.getenv("DISHELL_DEBUG", "")
+
+    def _debug(self, message: str) -> None:
+        """Append a diagnostic line when DISHELL_DEBUG points at a file."""
+        if not self._debug_path:
+            return
+        with contextlib.suppress(OSError):
+            with open(self._debug_path, "a", encoding="utf-8") as handle:
+                handle.write(f"{time.time():.3f} {message}\n")
 
     # ------------------------------------------------------------------ run
 
@@ -66,6 +75,10 @@ class DishellManager:
         self._finished = self._loop.create_future()
 
         cols, rows = self.local.size()
+        self._debug(
+            f"start argv={self.argv} size={cols}x{rows} "
+            f"stdin_fd={self.local.fd} is_tty={self.local.is_tty} pid={os.getpid()}"
+        )
         self.pty.spawn(cols, rows)
         self.local.enter_raw()
 
@@ -125,6 +138,9 @@ class DishellManager:
             return
 
         forward, commands = self.filter.feed(data)
+        self._debug(
+            f"stdin={data!r} -> agy={forward!r} held={self.filter.pending!r} cmds={commands}"
+        )
         self._write_to_agy(forward)
         for command in commands:
             asyncio.create_task(self._handle_local_command(command))
