@@ -59,7 +59,7 @@ class DishellManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._finished: asyncio.Future | None = None
         self._user: discord.User | None = None
-        self._live_message: discord.Message | None = None
+        self._live_messages: list[discord.Message] = []
         self._last_snapshot: str | None = None
         self._start_new_message = False
         self._pending_alert: str | None = None
@@ -296,7 +296,7 @@ class DishellManager:
         self._apply_size()
         self.detector = AlertDetector()
         self._last_snapshot = None
-        self._live_message = None
+        self._live_messages = []
         self._pending_alert = None
         self._start_new_message = True
         self.publish_task = asyncio.create_task(self._publish_loop())
@@ -328,7 +328,7 @@ class DishellManager:
             self.bot_task = None
 
         self._user = None
-        self._live_message = None
+        self._live_messages = []
 
     def on_bot_ready(self, username: str) -> None:
         self.local.notice(f"[Dishell] 디스코드 로그인: {username}")
@@ -410,49 +410,85 @@ class DishellManager:
                 # Fed every tick, including unchanged ones: "agy went quiet"
                 # is itself a transition worth reporting.
                 alert = self.detector.update(snapshot, time.monotonic())
+                
+                history_lines = None
                 if alert:
                     self._pending_alert = alert
                     self._start_new_message = True
+                
+                if self._start_new_message:
+                    history_lines = self.screen.pop_history()
+                    
                 if snapshot == self._last_snapshot and not self._start_new_message:
                     continue
-                await self._publish(snapshot)
+                await self._publish(snapshot, history_lines)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.local.notice(f"[Dishell] 화면 전송 오류: {exc}")
 
-    async def _publish(self, snapshot: str) -> None:
+    async def _publish(self, snapshot: str, history_lines: list[str] = None) -> None:
         user = await self._get_user()
         if user is None:
             return
 
-        embed = discord.Embed(
-            title="agy · 실시간 화면",
-            description=render_for_discord(snapshot),
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text="일반 메시지=입력 · /key esc · /rc off")
+        chunks = render_for_discord(snapshot, history_lines)
         header = ALERT_HEADERS.get(self._pending_alert or "", "")
 
         try:
-            if self._live_message is None or self._start_new_message:
-                # A new message is what actually raises a notification;
-                # an edit is silent.
-                self._live_message = await user.send(content=header or None, embed=embed)
+            if not getattr(self, "_live_messages", []):
+                self._live_messages = []
+
+            if self._start_new_message or not self._live_messages:
+                self._live_messages = []
+                for i, chunk in enumerate(chunks):
+                    embed = discord.Embed(
+                        title="agy · 실시간 화면" if i == 0 else None,
+                        description=chunk,
+                        color=discord.Color.blurple(),
+                    )
+                    if i == len(chunks) - 1:
+                        embed.set_footer(text="일반 메시지=입력 · /key esc · /rc off")
+                    
+                    msg = await user.send(
+                        content=(header or None) if i == 0 else None,
+                        embed=embed
+                    )
+                    self._live_messages.append(msg)
+                    
                 self._start_new_message = False
                 self._pending_alert = None
             else:
-                await self._live_message.edit(embed=embed)
+                for i, chunk in enumerate(chunks):
+                    embed = discord.Embed(
+                        title="agy · 실시간 화면" if i == 0 else None,
+                        description=chunk,
+                        color=discord.Color.blurple(),
+                    )
+                    if i == len(chunks) - 1:
+                        embed.set_footer(text="일반 메시지=입력 · /key esc · /rc off")
+                    
+                    if i < len(self._live_messages):
+                        await self._live_messages[i].edit(embed=embed)
+                    else:
+                        msg = await user.send(embed=embed)
+                        self._live_messages.append(msg)
+                
+                while len(self._live_messages) > len(chunks):
+                    extra = self._live_messages.pop()
+                    await extra.delete()
+
         except discord.Forbidden:
             self.local.notice(FORBIDDEN_HELP)
             self.local.notice("[Dishell] 원격 제어를 종료합니다.")
             asyncio.create_task(self._stop_bot())
             return
         except discord.NotFound:
-            self._live_message = None  # deleted by the user; start a fresh one
+            self._live_messages = []  # deleted by the user; start a fresh one
+            self._start_new_message = True
             return
         except discord.HTTPException:
-            self._live_message = None  # rate limited; retry on the next tick
+            # rate limited or network error; retry on the next tick
             return
 
         self._last_snapshot = snapshot

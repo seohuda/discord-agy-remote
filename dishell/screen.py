@@ -23,9 +23,18 @@ class TerminalScreen:
     def __init__(self, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS):
         self.cols = cols
         self.rows = rows
-        self._screen = pyte.Screen(cols, rows)
+        self._screen = pyte.HistoryScreen(cols, rows, history=10000)
         self._stream = pyte.Stream(self._screen)
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def pop_history(self) -> list[str]:
+        """Return and clear the scrolled-off lines from the top history."""
+        lines = []
+        if hasattr(self._screen, "history"):
+            while self._screen.history.top:
+                row = self._screen.history.top.popleft()
+                lines.append("".join(c.data for c in row.values()))
+        return lines
 
     def feed(self, data: bytes) -> None:
         """Replay ``data``; partial multi-byte characters are carried over."""
@@ -49,30 +58,45 @@ class TerminalScreen:
         return "\n".join(lines)
 
 
-def render_for_discord(snapshot: str, limit: int = DISCORD_LIMIT) -> str:
-    """Wrap ``snapshot`` in a code fence that fits in one Discord embed.
-
-    When the screen is too tall the *tail* is kept, since that is where a TUI
-    puts its most recent output and its input prompt.
-    """
-    if not snapshot.strip():
-        return "```text\n(빈 화면)\n```"
-
-    # A fence inside the payload would terminate our own code block early.
-    safe = snapshot.replace("```", "`​``")
-
+def render_for_discord(snapshot: str, history_lines: list[str] = None, limit: int = DISCORD_LIMIT) -> list[str]:
+    """Wrap output in code fences, splitting into multiple if needed."""
+    lines = []
+    if history_lines:
+        lines.extend([line.rstrip() for line in history_lines])
+    
+    lines.extend([line.rstrip() for line in snapshot.split("\n")])
+    
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+        
+    if not lines:
+        return ["```text\n(빈 화면)\n```"]
+        
+    chunks = []
+    current_chunk = []
+    current_len = 0
     fence_overhead = len("```text\n\n```")
     budget = limit - fence_overhead
-    if len(safe) > budget:
-        lines = safe.split("\n")
-        kept: list[str] = []
-        used = 0
-        for line in reversed(lines):
-            cost = len(line) + 1
-            if used + cost > budget:
-                break
-            kept.insert(0, line)
-            used += cost
-        safe = "\n".join(kept) if kept else safe[-budget:]
-
-    return f"```text\n{safe}\n```"
+    
+    for line in lines:
+        safe_line = line.replace("```", "`​``")
+        cost = len(safe_line) + 1
+        
+        if current_len + cost > budget and current_chunk:
+            chunks.append("```text\n" + "\n".join(current_chunk) + "\n```")
+            current_chunk = []
+            current_len = 0
+            
+        current_chunk.append(safe_line)
+        current_len += cost
+        
+    if current_chunk:
+        chunks.append("```text\n" + "\n".join(current_chunk) + "\n```")
+        
+    if len(chunks) > 4:
+        chunks = chunks[-4:]
+        chunks[0] = "```text\n...(출력이 너무 길어 상단이 생략되었습니다)...\n" + chunks[0][8:]
+        
+    return chunks

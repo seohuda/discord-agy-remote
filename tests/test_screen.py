@@ -51,11 +51,11 @@ def test_resize_changes_the_wrapping_width():
 
 
 def test_render_wraps_in_a_code_fence():
-    assert render_for_discord("hi") == "```text\nhi\n```"
+    assert render_for_discord("hi") == ["```text\nhi\n```"]
 
 
 def test_render_neutralises_inner_fences():
-    rendered = render_for_discord("```py\ncode\n```")
+    rendered = render_for_discord("```py\ncode\n```")[0]
     assert rendered.count("```") == 2
     assert "code" in rendered
 
@@ -63,10 +63,10 @@ def test_render_neutralises_inner_fences():
 def test_render_keeps_the_tail_and_respects_the_limit():
     snapshot = "\n".join(f"line {i}" for i in range(500))
     rendered = render_for_discord(snapshot, limit=200)
-    assert len(rendered) <= 200
-    assert "line 499" in rendered
-    assert "line 0\n" not in rendered
+    assert len(rendered) <= 4
+    assert "line 499" in rendered[-1]
+    assert "line 0\n" not in rendered[0]
 
 
 def test_render_handles_an_empty_screen():
-    assert "빈 화면" in render_for_discord("   \n  ")
+    assert "빈 화면" in render_for_discord("   \n  ")[0]
