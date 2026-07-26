@@ -1,5 +1,9 @@
 # discord-agy-remote
 
+[![tests](https://github.com/seohuda/discord-agy-remote/actions/workflows/tests.yml/badge.svg)](https://github.com/seohuda/discord-agy-remote/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
 로컬에서 실행 중인 Antigravity CLI(`agy`) 세션을 디스코드 DM으로 원격 조작하는 셀프 호스팅 브릿지입니다.
 
 `agy`를 의사 터미널(PTY) 위에서 실행하기 때문에, 로컬 터미널에서는 평소와 **완전히 동일한 TUI**를 그대로 사용하면서 동시에 디스코드에서도 같은 세션을 조작할 수 있습니다.
@@ -107,13 +111,14 @@ agy
 | `/rc off` | 원격 제어 종료, 봇 연결 해제 |
 | `/rc status` | 현재 상태 확인 |
 
-디스코드 DM에서 사용할 수 있는 명령입니다.
+디스코드 DM에서 사용할 수 있는 명령입니다. 자동완성에서 고르는 **슬래시 명령**과 그냥 텍스트로 친 것 모두 동일하게 동작합니다.
 
 | 디스코드 DM | 동작 |
 | --- | --- |
 | 아무 텍스트 | `agy` 입력창에 입력 후 전송 (여러 줄은 bracketed paste로 한 번에 입력) |
+| `/say <텍스트>` | 위와 같지만 `/model` 처럼 슬래시로 시작하는 내용도 그대로 입력 |
 | `/key esc` | 특수키 전송 |
-| `/key down down enter` | 여러 키 순서대로 전송 (권한 승인 프롬프트 조작용) |
+| `/key down down enter` | 여러 키 순서대로 전송 (메뉴·승인 프롬프트 조작용) |
 | `/rc off` | 원격에서 원격 제어 종료 |
 | `/rc status` | 세션 상태 확인 |
 | `/help` | 사용법과 키 목록 |
@@ -122,6 +127,25 @@ agy
 `/model` 처럼 `agy` 자신의 슬래시 명령은 가로채지 않고 그대로 전달됩니다.
 
 사용 가능한 키: `enter` `esc` `tab` `shift-tab` `space` `backspace` `delete` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `ctrl-a`~`ctrl-w` `y` `n`
+
+### 메뉴에서 항목 고르기
+
+모델 선택이나 권한 승인처럼 화면에 목록이 뜨면, 커서(`>`)를 옮긴 뒤 확정하는 식으로 조작합니다. 화면 하단 푸터가 어떤 키를 쓰는지 알려줍니다.
+
+```
+  > Gemini 3.1 Pro
+    Claude Opus 4.6
+    GPT-5.2
+  ↑/↓ Navigate · enter Select · esc Go Back
+```
+
+두 칸 아래 항목을 고르려면 이동과 확정을 한 번에 보냅니다.
+
+```
+/key down down enter
+```
+
+승인 프롬프트도 같은 방식입니다. `/key down enter` 로 두 번째 선택지를, `/key esc` 로 취소를 보냅니다.
 
 ## 알림
 
@@ -158,6 +182,8 @@ agy
 .venv/bin/python -m pytest
 ```
 
+푸시와 PR 마다 파이썬 3.10 / 3.12 에서 같은 테스트가 돕니다(`.github/workflows/tests.yml`).
+
 | 모듈 | 역할 |
 | --- | --- |
 | `dishell/terminal.py` | PTY 생성, 로컬 터미널 raw 모드, 창 크기 전달 |
@@ -171,7 +197,7 @@ agy
 
 ## 알려진 제약
 
-* 긴 출력이 발생하면 스크롤 히스토리를 캡처하여 디스코드 메시지 한도를 넘지 않도록 최대 4개의 메시지(약 150줄)로 분할 전송합니다. 그 이상의 히스토리는 가장 오래된 상단 내용이 일부 생략될 수 있습니다.
+* 긴 출력은 화면 위로 흘러간 스크롤 히스토리까지 모아 최대 4개 메시지로 나눠 보냅니다. 그보다 많으면 가장 오래된 상단이 생략됩니다.
 * 색상은 전달되지 않습니다. 코드블록 안 단색 텍스트로만 표시됩니다.
 * 화면 갱신은 1.5초 간격입니다. 디스코드 API Rate Limit 제한을 피하기 위한 값입니다.
 * 봇 수명이 agy 프로세스에 묶여 있습니다. **agy가 떠 있지 않으면 디스코드에서 새 세션을 시작할 수 없습니다.** 반드시 로컬에서 `agy` 실행 후 `/rc on`을 입력해야 합니다.
