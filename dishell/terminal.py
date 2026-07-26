@@ -137,16 +137,19 @@ def effective_size(terminal_size, remote_cols: int, remote_active: bool):
     return max(cols, 20), rows
 
 
+def _stdin_fd() -> int:
+    """The real descriptor behind stdin, or ``-1`` when there is none."""
+    try:
+        return sys.stdin.fileno()
+    except (OSError, ValueError, io.UnsupportedOperation):
+        return -1
+
+
 class LocalTerminal:
     """The user's own terminal: raw mode, size, and resize notifications."""
 
     def __init__(self, fd: int | None = None):
-        if fd is None:
-            try:
-                fd = sys.stdin.fileno()
-            except (OSError, ValueError, io.UnsupportedOperation):
-                fd = -1  # stdin replaced by something without a descriptor
-        self.fd: int = fd
+        self.fd = _stdin_fd() if fd is None else fd
         self.is_tty = self.fd >= 0 and os.isatty(self.fd)
         self._saved: list | None = None
 
