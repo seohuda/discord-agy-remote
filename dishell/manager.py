@@ -410,75 +410,63 @@ class DishellManager:
                 # Fed every tick, including unchanged ones: "agy went quiet"
                 # is itself a transition worth reporting.
                 alert = self.detector.update(snapshot, time.monotonic())
-                
-                history_lines = None
                 if alert:
                     self._pending_alert = alert
                     self._start_new_message = True
-                
-                if self._start_new_message:
-                    history_lines = self.screen.pop_history()
-                    
+
                 if snapshot == self._last_snapshot and not self._start_new_message:
                     continue
-                await self._publish(snapshot, history_lines)
+                # Scrolled-off lines are only worth carrying into a fresh
+                # message; an edit keeps showing the same live screen.
+                history = self.screen.pop_history() if self._start_new_message else None
+                await self._publish(snapshot, history)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                import traceback
                 self.local.notice(f"[Dishell] 화면 전송 오류: {exc}")
-                self.local.notice(traceback.format_exc())
+                self._debug(f"publish failed: {exc!r}")
 
-    async def _publish(self, snapshot: str, history_lines: list[str] = None) -> None:
+    def _frame(self, chunk: str, first: bool, last: bool) -> discord.Embed:
+        embed = discord.Embed(
+            title="agy · 실시간 화면" if first else None,
+            description=chunk,
+            color=discord.Color.blurple(),
+        )
+        if last:
+            embed.set_footer(text="일반 메시지=입력 · /key esc · /rc off")
+        return embed
+
+    async def _publish(self, snapshot: str, history: list[str] | None = None) -> None:
         user = await self._get_user()
         if user is None:
             return
 
-        chunks = render_for_discord(snapshot, history_lines)
+        chunks = render_for_discord(snapshot, history)
         header = ALERT_HEADERS.get(self._pending_alert or "", "")
+        fresh = self._start_new_message or not self._live_messages
 
         try:
-            if not getattr(self, "_live_messages", []):
+            if fresh:
                 self._live_messages = []
+            for i, chunk in enumerate(chunks):
+                embed = self._frame(chunk, first=(i == 0), last=(i == len(chunks) - 1))
+                if i < len(self._live_messages):
+                    await self._live_messages[i].edit(embed=embed)
+                else:
+                    self._live_messages.append(
+                        await user.send(
+                            content=(header or None) if i == 0 else None,
+                            embed=embed,
+                        )
+                    )
 
-            if self._start_new_message or not self._live_messages:
-                self._live_messages = []
-                for i, chunk in enumerate(chunks):
-                    embed = discord.Embed(
-                        title="agy · 실시간 화면" if i == 0 else None,
-                        description=chunk,
-                        color=discord.Color.blurple(),
-                    )
-                    if i == len(chunks) - 1:
-                        embed.set_footer(text="일반 메시지=입력 · /key esc · /rc off")
-                    
-                    msg = await user.send(
-                        content=(header or None) if i == 0 else None,
-                        embed=embed
-                    )
-                    self._live_messages.append(msg)
-                    
-                self._start_new_message = False
-                self._pending_alert = None
-            else:
-                for i, chunk in enumerate(chunks):
-                    embed = discord.Embed(
-                        title="agy · 실시간 화면" if i == 0 else None,
-                        description=chunk,
-                        color=discord.Color.blurple(),
-                    )
-                    if i == len(chunks) - 1:
-                        embed.set_footer(text="일반 메시지=입력 · /key esc · /rc off")
-                    
-                    if i < len(self._live_messages):
-                        await self._live_messages[i].edit(embed=embed)
-                    else:
-                        msg = await user.send(embed=embed)
-                        self._live_messages.append(msg)
-                
-                while len(self._live_messages) > len(chunks):
-                    extra = self._live_messages.pop()
-                    await extra.delete()
+            # The screen shrank; drop the messages that are no longer covered.
+            while len(self._live_messages) > len(chunks):
+                with contextlib.suppress(discord.HTTPException):
+                    await self._live_messages.pop().delete()
+
+            self._start_new_message = False
+            self._pending_alert = None
 
         except discord.Forbidden:
             self.local.notice(FORBIDDEN_HELP)

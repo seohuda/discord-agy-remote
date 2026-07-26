@@ -8,6 +8,7 @@ the user's own terminal is put in raw mode and forwarded byte for byte.
 import asyncio
 import errno
 import fcntl
+import io
 import os
 import pty
 import signal
@@ -140,8 +141,13 @@ class LocalTerminal:
     """The user's own terminal: raw mode, size, and resize notifications."""
 
     def __init__(self, fd: int | None = None):
-        self.fd = fd if fd is not None else sys.stdin.fileno()
-        self.is_tty = os.isatty(self.fd)
+        if fd is None:
+            try:
+                fd = sys.stdin.fileno()
+            except (OSError, ValueError, io.UnsupportedOperation):
+                fd = -1  # stdin replaced by something without a descriptor
+        self.fd: int = fd
+        self.is_tty = self.fd >= 0 and os.isatty(self.fd)
         self._saved: list | None = None
 
     def size(self) -> tuple[int, int]:
