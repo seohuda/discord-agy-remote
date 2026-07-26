@@ -35,7 +35,7 @@ class Action:
     key_names: list[str] = field(default_factory=list)
 
 
-def _text_action(text: str) -> Action:
+def text_action(text: str) -> Action:
     """Type ``text`` into agy and submit it.
 
     Multi-line text is wrapped in a bracketed paste so the TUI inserts it as a
@@ -55,7 +55,7 @@ def parse_remote_message(content: str) -> Action:
         return Action(kind="error", message="빈 메시지는 전송하지 않습니다.")
 
     if text.startswith("//"):
-        return _text_action(text[1:])
+        return text_action(text[1:])
 
     head, _, rest = text.partition(" ")
     head = head.lower()
@@ -89,4 +89,4 @@ def parse_remote_message(content: str) -> Action:
             )
         return Action(kind="keys", payload=payload, key_names=[a.lower() for a in args])
 
-    return _text_action(text)
+    return text_action(text)

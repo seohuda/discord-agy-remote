@@ -367,36 +367,46 @@ class DishellManager:
             self.local.notice(f"[Dishell] DM 전송 실패: {exc}")
             return False
 
+    def status_text(self) -> str:
+        alive = self.pty.reap(block=False) is None
+        state = "🟢 실행 중" if alive else "🔴 종료됨"
+        return (
+            f"agy pid `{self.pty.pid}` · {state} · "
+            f"화면 {self.screen.cols}x{self.screen.rows}"
+        )
+
+    def remote_off(self) -> None:
+        """Turn remote control off on behalf of Discord.
+
+        The reply has to go out before the bot disconnects, so the teardown is
+        scheduled rather than awaited.
+        """
+        self.local.notice("[Dishell] 디스코드에서 원격 제어를 껐습니다.")
+        asyncio.create_task(self._stop_bot())
+        asyncio.create_task(self._force_repaint())
+
+    def send_input(self, payload: bytes) -> None:
+        """Type ``payload`` into agy and post the next screen as a new message,
+        so it lands underneath the command that caused it."""
+        self._write_to_agy(payload)
+        self._start_new_message = True
+
     async def handle_remote_message(self, message: discord.Message) -> None:
         action = parse_remote_message(message.content)
 
+        async def reply(text: str) -> None:
+            with contextlib.suppress(Exception):
+                await message.reply(text, mention_author=False)
+
         if action.kind in ("help", "error"):
-            with contextlib.suppress(Exception):
-                await message.reply(action.message, mention_author=False)
-            return
-
-        if action.kind == "rc_status":
-            alive = self.pty.reap(block=False) is None
-            state = "🟢 실행 중" if alive else "🔴 종료됨"
-            with contextlib.suppress(Exception):
-                await message.reply(
-                    f"agy pid `{self.pty.pid}` · {state} · 화면 {self.screen.cols}x{self.screen.rows}",
-                    mention_author=False,
-                )
-            return
-
-        if action.kind == "rc_off":
-            with contextlib.suppress(Exception):
-                await message.reply("원격 제어를 종료합니다.", mention_author=False)
-            self.local.notice("[Dishell] 디스코드에서 원격 제어를 껐습니다.")
-            asyncio.create_task(self._stop_bot())
-            asyncio.create_task(self._force_repaint())
-            return
-
-        # text / keys -> straight into agy's terminal
-        self._write_to_agy(action.payload)
-        # Post the next screen as a new message so it lands under this command.
-        self._start_new_message = True
+            await reply(action.message)
+        elif action.kind == "rc_status":
+            await reply(self.status_text())
+        elif action.kind == "rc_off":
+            await reply("원격 제어를 종료합니다.")
+            self.remote_off()
+        else:  # text / keys -> straight into agy's terminal
+            self.send_input(action.payload)
 
     # ------------------------------------------------------------ publishing
 
