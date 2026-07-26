@@ -70,3 +70,37 @@ def test_render_keeps_the_tail_and_respects_the_limit():
 
 def test_render_handles_an_empty_screen():
     assert "빈 화면" in render_for_discord("   \n  ")[0]
+
+
+def test_render_never_exceeds_the_limit_even_with_one_huge_line():
+    """A single line longer than the budget must be broken up, not sent whole.
+
+    Discord rejects an over-length embed outright, which would lose the frame.
+    """
+    rendered = render_for_discord("x" * 900, limit=200)
+    assert all(len(chunk) <= 200 for chunk in rendered)
+    assert "x" in rendered[-1]
+
+
+def test_render_puts_history_above_the_current_screen():
+    rendered = render_for_discord("now", ["older"], limit=200)
+    assert rendered[0].index("older") < rendered[0].index("now")
+
+
+def test_scrolled_off_lines_keep_their_column_order():
+    """History rows are sparse maps keyed by column, not ordered sequences."""
+    screen = TerminalScreen(20, 3)
+    # Paint a later column first, then an earlier one, and scroll the line away.
+    screen.feed(b"\x1b[1;10Hlate\x1b[1;1Hearly\r\n")
+    for _ in range(5):
+        screen.feed(b"filler\r\n")
+    history = screen.pop_history()
+    assert any(line == "early    late" for line in history)
+
+
+def test_popping_history_twice_does_not_repeat_lines():
+    screen = TerminalScreen(20, 3)
+    for i in range(10):
+        screen.feed(f"line {i}\r\n".encode())
+    assert screen.pop_history()
+    assert screen.pop_history() == []

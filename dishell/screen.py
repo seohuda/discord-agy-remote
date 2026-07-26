@@ -28,12 +28,14 @@ class TerminalScreen:
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def pop_history(self) -> list[str]:
-        """Return and clear the scrolled-off lines from the top history."""
+        """Return and clear the lines that have scrolled off the top."""
         lines = []
-        if hasattr(self._screen, "history"):
-            while self._screen.history.top:
-                row = self._screen.history.top.popleft()
-                lines.append("".join(c.data for c in row.values()))
+        while self._screen.history.top:
+            row = self._screen.history.top.popleft()
+            # A history row is a sparse map keyed by column, so it has to be
+            # read by index: iterating its values would drop the gaps between
+            # written cells and follow write order rather than column order.
+            lines.append("".join(row[x].data for x in range(self.cols)).rstrip())
         return lines
 
     def feed(self, data: bytes) -> None:
@@ -58,45 +60,67 @@ class TerminalScreen:
         return "\n".join(lines)
 
 
-def render_for_discord(snapshot: str, history_lines: list[str] = None, limit: int = DISCORD_LIMIT) -> list[str]:
-    """Wrap output in code fences, splitting into multiple if needed."""
-    lines = []
-    if history_lines:
-        lines.extend([line.rstrip() for line in history_lines])
-    
-    lines.extend([line.rstrip() for line in snapshot.split("\n")])
-    
+FENCE_OPEN = "```text\n"
+FENCE_CLOSE = "\n```"
+TRUNCATED = "...(출력이 너무 길어 상단이 생략되었습니다)..."
+MAX_CHUNKS = 4
+
+
+def _fence(lines: list[str]) -> str:
+    return FENCE_OPEN + "\n".join(lines) + FENCE_CLOSE
+
+
+def render_for_discord(
+    snapshot: str,
+    history_lines: list[str] | None = None,
+    limit: int = DISCORD_LIMIT,
+) -> list[str]:
+    """Wrap the screen (and any scrolled-off history above it) in code fences.
+
+    Returns one message per fence, oldest first, each within ``limit``. Only
+    the last ``MAX_CHUNKS`` are kept so a burst of output cannot turn into a
+    wall of DMs.
+    """
+    lines = [line.rstrip() for line in (history_lines or [])]
+    lines += [line.rstrip() for line in snapshot.split("\n")]
+
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:
         lines.pop()
-        
+
     if not lines:
-        return ["```text\n(빈 화면)\n```"]
-        
-    chunks = []
-    current_chunk = []
+        return [_fence(["(빈 화면)"])]
+
+    budget = limit - len(FENCE_OPEN) - len(FENCE_CLOSE)
+    groups: list[list[str]] = []
+    current: list[str] = []
     current_len = 0
-    fence_overhead = len("```text\n\n```")
-    budget = limit - fence_overhead
-    
+
     for line in lines:
-        safe_line = line.replace("```", "`​``")
-        cost = len(safe_line) + 1
-        
-        if current_len + cost > budget and current_chunk:
-            chunks.append("```text\n" + "\n".join(current_chunk) + "\n```")
-            current_chunk = []
-            current_len = 0
-            
-        current_chunk.append(safe_line)
-        current_len += cost
-        
-    if current_chunk:
-        chunks.append("```text\n" + "\n".join(current_chunk) + "\n```")
-        
-    if len(chunks) > 4:
-        chunks = chunks[-4:]
-        chunks[0] = "```text\n...(출력이 너무 길어 상단이 생략되었습니다)...\n" + chunks[0][8:]
-        
-    return chunks
+        # An inner fence would close ours early; a zero-width space breaks it.
+        safe = line.replace("```", "`​``")
+        # A single line can outgrow the budget on its own (a long pasted path,
+        # say), so it is split rather than sent over the limit and rejected.
+        for piece in _split(safe, budget) or [""]:
+            cost = len(piece) + 1
+            if current and current_len + cost > budget:
+                groups.append(current)
+                current, current_len = [], 0
+            current.append(piece)
+            current_len += cost
+
+    if current:
+        groups.append(current)
+
+    if len(groups) > MAX_CHUNKS:
+        groups = groups[-MAX_CHUNKS:]
+        # The marker takes the place of the oldest surviving line so the
+        # first chunk stays within the limit.
+        groups[0] = [TRUNCATED, *groups[0][1:]]
+
+    return [_fence(group) for group in groups]
+
+
+def _split(line: str, width: int) -> list[str]:
+    return [line[i:i + width] for i in range(0, len(line), width)]
