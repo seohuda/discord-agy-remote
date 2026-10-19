@@ -7,6 +7,7 @@ picture is published.
 """
 
 import codecs
+from dataclasses import dataclass
 
 import pyte
 
@@ -17,15 +18,58 @@ DEFAULT_ROWS = 30
 DISCORD_LIMIT = 3900
 
 
+@dataclass(frozen=True)
+class ScreenFrame:
+    """An immutable, position-preserving view of the terminal."""
+
+    lines: tuple[str, ...]
+    cols: int
+    rows: int
+    version: int = 0
+    scrolls: int = 0
+    resets: int = 0
+
+
+class _TrackedScreen(pyte.HistoryScreen):
+    def __init__(self, *args, **kwargs):
+        self.scrolls = 0
+        self.resets = 0
+        super().__init__(*args, **kwargs)
+
+    def index(self):
+        bottom = self.margins.bottom if self.margins else self.lines - 1
+        if self.cursor.y == bottom:
+            self.scrolls += 1
+        super().index()
+
+    def reverse_index(self):
+        top = self.margins.top if self.margins else 0
+        if self.cursor.y == top:
+            self.scrolls += 1
+        super().reverse_index()
+
+    def reset(self):
+        self.resets += 1
+        super().reset()
+
+    def erase_in_display(self, how=0, *args, **kwargs):
+        if how in (2, 3):
+            self.resets += 1
+        super().erase_in_display(how, *args, **kwargs)
+
+
 class TerminalScreen:
     """An in-memory VT screen fed with the raw bytes agy writes to the PTY."""
 
     def __init__(self, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS):
         self.cols = cols
         self.rows = rows
-        self._screen = pyte.HistoryScreen(cols, rows, history=10000)
+        self._screen = _TrackedScreen(cols, rows, history=10000)
         self._stream = pyte.Stream(self._screen)
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.version = 0
+        self.snapshot_count = 0
+        self._cached_frame: ScreenFrame | None = None
 
     def pop_history(self) -> list[str]:
         """Return and clear the lines that have scrolled off the top."""
@@ -43,16 +87,29 @@ class TerminalScreen:
         text = self._decoder.decode(data)
         if text:
             self._stream.feed(text)
+            self.version += 1
 
     def resize(self, cols: int, rows: int) -> None:
         if (cols, rows) == (self.cols, self.rows):
             return
         self.cols, self.rows = cols, rows
         self._screen.resize(rows, cols)
+        self.version += 1
+
+    def capture(self) -> ScreenFrame:
+        """Build once per output batch; retain blank rows and their positions."""
+        if self._cached_frame is None or self._cached_frame.version != self.version:
+            self.snapshot_count += 1
+            self._cached_frame = ScreenFrame(
+                tuple(line.rstrip() for line in self._screen.display),
+                self.cols, self.rows, self.version,
+                self._screen.scrolls, self._screen.resets,
+            )
+        return self._cached_frame
 
     def snapshot(self) -> str:
         """The current screen with trailing blank space removed."""
-        lines = [line.rstrip() for line in self._screen.display]
+        lines = list(self.capture().lines)
         while lines and not lines[0]:
             lines.pop(0)
         while lines and not lines[-1]:

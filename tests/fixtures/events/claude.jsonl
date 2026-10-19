@@ -1,0 +1,3 @@
+{"type":"assistant","message":{"role":"assistant","content":[]}}
+{"type":"control_request","request_id":"fixture-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"duration_api_ms":1,"num_turns":1,"session_id":"fixture"}
