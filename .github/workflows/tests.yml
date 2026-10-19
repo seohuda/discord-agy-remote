@@ -18,3 +18,5 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
+      - run: python scripts/benchmark_sync.py
+      - run: python -m compileall -q dishell main.py scripts
