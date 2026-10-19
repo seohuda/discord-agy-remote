@@ -125,3 +125,22 @@ def test_missing_executable_exits_with_127():
         assert proc.reap() == 127
     finally:
         proc.close()
+
+
+def test_pty_master_is_not_inherited_by_other_cli_sessions():
+    import os
+    proc = PtyProcess([sys.executable, "-c", "input()"])
+    proc.spawn(80, 24)
+    try:
+        assert os.get_inheritable(proc.master_fd) is False
+    finally:
+        proc.terminate()
+        proc.reap()
+        proc.close()
+
+
+def test_discord_token_is_not_forwarded_to_the_cli_environment(monkeypatch):
+    monkeypatch.setenv("DISCORD_TOKEN", "never-forward-this-fixture")
+    output, status = run("import os; print('DISCORD_TOKEN' in os.environ)")
+    assert b"False" in output
+    assert status == 0
