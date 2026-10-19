@@ -77,3 +77,13 @@ def test_notifications_preserve_failures_deduplicate_and_prioritize():
     assert outbox.peek() is failed  # unsuccessful delivery has no acknowledgement
     outbox.acknowledge(failed)
     assert outbox.peek() is completed
+
+
+def test_malformed_or_unrecognized_structured_events_remain_conservative():
+    for plugin in default_plugins().values():
+        assert plugin.detect_structured({"type": {"unexpected": True}}).event_type == E.UNKNOWN
+        assert plugin.detect_structured({"type": "session.status", "properties": {"status": {"type": []}}}).event_type == E.UNKNOWN
+    d = EventDetector("s", default_plugins()["codex"])
+    d.update("", now=1, structured={"type": "turn.started"})
+    assert d.update("", now=2, structured={"type": "item.updated"}) is None
+    assert d.state == E.RUNNING

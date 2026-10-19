@@ -11,6 +11,8 @@ class CodexPlugin(BasePlugin):
 
     def detect_structured(self, event):
         kind = event.get("type")
+        if not isinstance(kind, str):
+            return UNKNOWN
         state = {"turn.started": EventType.RUNNING,
                  "turn.completed": EventType.COMPLETED,
                  "turn.failed": EventType.ERROR, "error": EventType.ERROR}.get(kind)

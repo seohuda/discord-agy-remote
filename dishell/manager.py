@@ -143,10 +143,17 @@ class DishellManager:
                 self._loop.remove_signal_handler(signal.SIGWINCH)
                 self._loop.remove_signal_handler(signal.SIGTERM)
         try:
-            await self._stop_bot(announce="🔴 **원격 제어 종료** — 로컬 CLI 세션이 끝났습니다.")
+            await self.sessions.close()
+            if self.rc_enabled and self._online:
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._publish_events(), timeout=3)
+            if self.rc_enabled and len(self.sessions.events):
+                self.local.notice(f"[Dishell] 종료 시 미전송 알림 {len(self.sessions.events)}개 · 감사 로그에 실패 기록")
+                self.audit.record(session_id="global", user_id=self.user_id, action="notification",
+                                  decision="failed", source="local", reason="shutdown_with_pending_notifications")
         finally:
             try:
-                await self.sessions.close()
+                await self._stop_bot(announce="🔴 **원격 제어 종료** — 로컬 CLI 세션이 끝났습니다.")
             finally:
                 self.local.restore()
 
@@ -399,7 +406,13 @@ class DishellManager:
     async def handle_action(self, context, action, respond):
         request = None
         try:
-            self._check_remote(context)
+            is_input = action.kind in ("text", "keys")
+            self._check_remote(context, action="remote_input_attempt" if is_input else "remote_command")
+            if is_input:
+                sid = self.sessions.active_id
+                self.audit.record(session_id=sid if sid in self.policy.sessions else "global",
+                                  user_id=context.user_id, action="remote_input", decision="attempted",
+                                  reason="input_received")
             if action.kind in ("help", "error"):
                 await respond(action.message)
                 return
@@ -469,18 +482,19 @@ class DishellManager:
                     "CLI 자체 승인 화면의 선택도 직접 검토하세요. 자동 Enter는 전송하지 않습니다.")
             view.message = await respond(text, view=view)
         except Exception as exc:
+            error = exc
             if request is not None:
                 try:
                     self.approvals.cancel(request.nonce)
                 except AuditError as audit_exc:
-                    exc = audit_exc
+                    error = audit_exc
                 if request.operation == "start":
                     self.policy.unregister(request.session_id)
             # Exception text can contain executable arguments or environment secrets.
-            code = str(exc) if isinstance(exc, (PermissionDenied, SessionError, AuditError)) else type(exc).__name__
+            code = str(error) if isinstance(error, (PermissionDenied, SessionError, AuditError)) else type(error).__name__
             from .launch import LaunchError
-            if isinstance(exc, LaunchError):
-                code = redact(str(exc))
+            if isinstance(error, LaunchError):
+                code = redact(str(error))
             await respond(f"작업을 거부했습니다: {code}")
 
     async def resolve_approval(self, context, nonce, session_id, *, approve):

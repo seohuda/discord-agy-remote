@@ -241,3 +241,38 @@ def test_other_input_invalidates_preissued_enter_even_before_the_cli_redraws(tmp
         finally:
             await manager.sessions.close()
     asyncio.run(scenario())
+
+
+def test_primary_process_completion_notification_is_flushed_before_disconnect(tmp_path):
+    async def scenario():
+        from test_publish import FakeUser
+        manager = DishellManager("mock", 42, [sys.executable, "-c", "print('done',flush=True)"],
+                                 audit=AuditLog(tmp_path / "audit" / "audit.jsonl"))
+        user = FakeUser()
+        manager._user = user
+        manager.rc_enabled = manager._online = True
+        manager.local.write = lambda data: None
+        assert await manager.run() == 0
+        texts = [message.embed.description for message in user.messages]
+        assert any("COMPLETED" in text and manager.primary.id in text for text in texts)
+        assert manager.pty.master_fd is None
+    asyncio.run(scenario())
+
+
+def test_rejected_oversized_input_attempt_is_audited_without_its_content(tmp_path):
+    async def scenario():
+        manager = manager_for(tmp_path)
+        manager.primary.state = Lifecycle.RUNNING
+        manager.sessions.active_id = manager.primary.id
+        marker = "never_log_the_prompt_"
+        response = await request(manager, marker * 4000)
+        assert "invalid_request" in response.texts[0]
+        assert not manager.approvals.pending
+        content = manager.audit.path.read_text()
+        assert '"action": "remote_input"' in content
+        assert '"decision": "attempted"' in content
+        assert marker not in content
+        # No child was started by this controller-only test.
+        manager.primary.state = Lifecycle.CREATED
+        await manager.sessions.close()
+    asyncio.run(scenario())

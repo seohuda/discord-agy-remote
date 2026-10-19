@@ -13,6 +13,8 @@ class OpenCodePlugin(BasePlugin):
         if not isinstance(properties, dict) or not isinstance(properties.get("status"), dict):
             return UNKNOWN
         status = properties["status"].get("type")
+        if not isinstance(status, str):
+            return UNKNOWN
         state = {"busy": EventType.RUNNING, "idle": EventType.IDLE,
                  "retry": EventType.RUNNING}.get(status)
         return Signal(state, 1.0, "opencode_session_" + status, True) if state else UNKNOWN

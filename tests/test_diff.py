@@ -1,5 +1,4 @@
 import asyncio
-from dataclasses import replace
 
 from dishell.diff import BlockPublisher, ScreenDiffEngine, render_blocks, utf16_len
 from dishell.screen import ScreenFrame, TerminalScreen
