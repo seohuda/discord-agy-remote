@@ -1,3 +1,3 @@
 {"type":"turn.started"}
 {"type":"turn.failed","error":{"message":"provider unavailable API_KEY=private-test-key"}}
-{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
+{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"cache_write_input_tokens":0}}

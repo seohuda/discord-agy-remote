@@ -187,3 +187,114 @@ def test_pathological_combining_marks_do_not_prevent_other_rows_from_syncing():
     assert all(utf16_len(b) < 3900 for b in blocks)
     assert "행 생략" in blocks[0]
     assert "next row" in blocks[0]
+
+
+class RecordingTransport(Transport):
+    """Record the fake Discord side, independently of publisher._contents."""
+    def __init__(self):
+        super().__init__()
+        self.visible = {}
+
+    async def send(self, index, text):
+        message = await super().send(index, text)
+        self.visible[message] = text
+        return message
+
+    async def edit(self, message, index, text):
+        await super().edit(message, index, text)
+        self.visible[message] = text
+
+    async def delete(self, message):
+        await super().delete(message)
+        self.visible.pop(message)
+
+
+def assert_visible_frame(transport, publisher, screen_frame):
+    assert [transport.visible[message] for message in publisher.messages] == render_blocks(screen_frame)
+
+
+def test_visible_discord_blocks_remain_consistent_through_scroll_resize_retry_and_reconnect():
+    async def scenario():
+        now = [0.0]
+        t = RecordingTransport()
+        p, d, screen = BlockPublisher(t, clock=lambda: now[0]), ScreenDiffEngine(), TerminalScreen(60, 24)
+        for row in range(24):
+            screen.feed(f"\x1b[{row+1};1Hrow {row} 한글🙂".encode())
+        original = screen.capture()
+        p.submit(d.update(original, now=0))
+        assert await p.flush()
+        assert_visible_frame(t, p, original)
+        p.submit(d.update(original, now=0))
+        assert await p.flush()
+        assert not t.edited
+        screen.feed("\x1b[10;1H\x1b[2K한 행 변경".encode())
+        p.submit(d.update(screen.capture(), now=0))
+        assert await p.flush()
+        assert [entry[1] for entry in t.edited] == [1]
+        assert_visible_frame(t, p, screen.capture())
+        screen.feed("\x1b[24;1H\r\n스크롤 다음 행".encode())
+        patch = d.update(screen.capture(), now=0)
+        assert patch.scrolled and patch.full_refresh
+        p.submit(patch)
+        assert await p.flush()
+        assert_visible_frame(t, p, screen.capture())
+        screen.resize(80, 12)
+        patch = d.update(screen.capture(), now=0)
+        assert patch.resized and patch.full_refresh
+        p.submit(patch)
+        assert await p.flush()
+        assert_visible_frame(t, p, screen.capture())
+        assert len(t.visible) == len(p.messages) == 2
+        screen.feed(b"\x1b[1;1H\x1b[2Kfailed-old-frame")
+        old = d.update(screen.capture(), now=0)
+        t.failure = ConnectionError("offline")
+        p.submit(old)
+        assert not await p.flush()
+        screen.feed(b"\x1b[1;1H\x1b[2K")
+        for byte in "최신🙂".encode():
+            screen.feed(bytes([byte]))
+        latest = screen.capture()
+        p.submit(d.update(latest, now=1))
+        t.failure, now[0] = None, 3
+        assert await p.flush()
+        assert_visible_frame(t, p, latest)
+        edits = len(t.edited)
+        p.submit(old)
+        assert await p.flush()
+        assert len(t.edited) == edits
+        assert_visible_frame(t, p, latest)
+        p.reconnect()
+        p.submit(d.update(latest, now=3))
+        assert await p.flush()
+        assert_visible_frame(t, p, latest)
+    asyncio.run(scenario())
+
+
+def test_cancelled_inflight_send_restores_the_complete_latest_frame():
+    import pytest
+    async def scenario():
+        t = RecordingTransport()
+        p, d = BlockPublisher(t), ScreenDiffEngine()
+        entered = asyncio.Event()
+        original_send = t.send
+        async def delivered_but_not_returned(index, text):
+            message = await original_send(index, text)
+            entered.set()
+            await asyncio.Event().wait()
+            return message
+        t.send = delivered_but_not_returned
+        p.submit(d.update(frame()))
+        task = asyncio.create_task(p.flush())
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not p.messages
+        assert not p._lock.locked()
+        t.send = original_send
+        latest = frame(["최신 한글" for _ in range(24)])
+        p.submit(d.update(latest))
+        assert await p.flush()
+        assert_visible_frame(t, p, latest)
+        assert len(p.messages) == 3
+    asyncio.run(scenario())

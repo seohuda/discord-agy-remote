@@ -7,6 +7,8 @@ class OpenCodePlugin(BasePlugin):
         super().__init__("opencode", "OpenCode", executable)
 
     def detect_structured(self, event):
+        if not isinstance(event, dict):
+            return UNKNOWN
         if event.get("type") != "session.status":
             return UNKNOWN
         properties = event.get("properties")

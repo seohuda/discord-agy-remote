@@ -12,3 +12,9 @@ Interactive Codex/Claude/OpenCode text has no verified screen rules and is UNKNO
 JSONL ingestion is opt-in via locally selected structured argv modes; OpenCode's
 server-event adapter is available programmatically, not automatically inferred
 from its TUI. An idle event does not mean that a task succeeded.
+
+Follow-up review rechecked these pinned sources. The minimal Codex usage fixture
+includes `cache_write_input_tokens`, and the Claude permission request includes
+`permission_suggestions`, `blocked_path`, and `tool_use_id`. The adapters ignore
+non-object payloads. Claude completion requires the verified `success` result
+subtype and boolean `is_error: false`; unknown or malformed result signals are UNKNOWN.

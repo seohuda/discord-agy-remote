@@ -2,10 +2,13 @@
 
 import heapq
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from enum import Enum
 
 from .redaction import redact
+
+RECENT_ACK_LIMIT = 1024
 
 
 class EventType(str, Enum):
@@ -101,16 +104,28 @@ class EventDetector:
 
 
 class EventOutbox:
-    """Failed notifications remain queued; newer transitions cannot overwrite them."""
+    """Keep failed notifications until acknowledgement, with bounded replay history.
+
+    Invariants (all mutations run on the owning asyncio loop):
+    * ``_keys`` is exactly the unique (session_id, sequence) keys in ``_heap``.
+    * ``_recent`` contains only acknowledged keys, disjoint from ``_keys``.
+    * ``_recent`` holds at most RECENT_ACK_LIMIT keys, in LRU order. Very late
+      replays outside this finite window may be enqueued again.
+    Pending notifications are never evicted to enforce the recent-history bound.
+    """
 
     def __init__(self):
         self._heap = []
         self._keys = set()
+        self._recent = OrderedDict()
         self._counter = 0
 
     def put(self, event: CLIEvent) -> None:
         key = (event.session_id, event.sequence)
         if key in self._keys:
+            return
+        if key in self._recent:
+            self._recent.move_to_end(key)
             return
         self._keys.add(key)
         self._counter += 1
@@ -121,8 +136,16 @@ class EventOutbox:
 
     def acknowledge(self, event: CLIEvent) -> None:
         # Only remove the item actually sent, even if priority changed at await.
-        self._heap = [entry for entry in self._heap if entry[2] is not event]
-        heapq.heapify(self._heap)
+        for index, entry in enumerate(self._heap):
+            if entry[2] is event:
+                self._heap.pop(index)
+                heapq.heapify(self._heap)
+                key = (event.session_id, event.sequence)
+                self._keys.remove(key)
+                self._recent[key] = None
+                if len(self._recent) > RECENT_ACK_LIMIT:
+                    self._recent.popitem(last=False)
+                return
 
     def __len__(self):
         return len(self._heap)

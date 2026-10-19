@@ -10,6 +10,8 @@ class CodexPlugin(BasePlugin):
         return bool(args and args[0] == "exec" and "--json" in args)
 
     def detect_structured(self, event):
+        if not isinstance(event, dict):
+            return UNKNOWN
         kind = event.get("type")
         if not isinstance(kind, str):
             return UNKNOWN

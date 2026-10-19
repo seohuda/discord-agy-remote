@@ -98,6 +98,7 @@ class DishellManager:
         self.remote_cols = _int_env("DISHELL_COLS", DEFAULT_REMOTE_COLS)
         self._event_retry_at = 0.0
         self._event_failures = 0
+        self._event_publish_lock = asyncio.Lock()
         self._tasks = set()
         self._last_snapshot = None
         self._live_messages = []
@@ -481,6 +482,18 @@ class DishellManager:
                     f"{self.approvals.ttl:g}초 이내 승인/거부. 화면이 바뀌면 입력 승인은 폐기됩니다.\n"
                     "CLI 자체 승인 화면의 선택도 직접 검토하세요. 자동 Enter는 전송하지 않습니다.")
             view.message = await respond(text, view=view)
+        except asyncio.CancelledError:
+            # A cancelled HTTP await may already have delivered the button.
+            # Revoke its capability before propagating cancellation; Exception
+            # does not catch CancelledError on supported Python versions.
+            if request is not None:
+                try:
+                    self.approvals.cancel(request.nonce)
+                except AuditError:
+                    self._online = False
+                    self._invalidate_remote()
+                    self.local.notice("[Dishell] 승인 취소 감사 로그 실패 · 원격 작업 차단")
+            raise
         except Exception as exc:
             error = exc
             if request is not None:
@@ -587,23 +600,26 @@ class DishellManager:
                 self._debug(f"publish_failed={type(exc).__name__}")
 
     async def _publish_events(self):
-        if time.monotonic() < self._event_retry_at:
-            return
-        for _ in range(4):
-            event = self.sessions.events.peek()
-            if event is None:
+        # Shutdown and the regular publisher can reach this path together.
+        # Keep peek/send/acknowledge in one consumer transaction.
+        async with self._event_publish_lock:
+            if time.monotonic() < self._event_retry_at:
                 return
-            stamp = datetime.fromtimestamp(event.timestamp, timezone.utc).strftime("%H:%M:%S UTC")
-            text = (f"[Session: {event.session_id}]\n상태: **{event.event_type.value}**\n"
-                    f"도구: {self.sessions.plugins[event.plugin_id].display_name}\n"
-                    f"메시지: {redact(event.reason)}\n시간: {stamp} · event #{event.sequence}\n현재 세션을 확인하세요.")
-            if not await self._notify(text):
-                self._event_failures += 1
-                self._event_retry_at = time.monotonic() + min(60, 2 ** min(self._event_failures, 5))
-                return
-            self.sessions.events.acknowledge(event)
-            self._event_failures = 0
-            self._event_retry_at = 0
+            for _ in range(4):
+                event = self.sessions.events.peek()
+                if event is None:
+                    return
+                stamp = datetime.fromtimestamp(event.timestamp, timezone.utc).strftime("%H:%M:%S UTC")
+                text = (f"[Session: {event.session_id}]\n상태: **{event.event_type.value}**\n"
+                        f"도구: {self.sessions.plugins[event.plugin_id].display_name}\n"
+                        f"메시지: {redact(event.reason)}\n시간: {stamp} · event #{event.sequence}\n현재 세션을 확인하세요.")
+                if not await self._notify(text):
+                    self._event_failures += 1
+                    self._event_retry_at = time.monotonic() + min(60, 2 ** min(self._event_failures, 5))
+                    return
+                self.sessions.events.acknowledge(event)
+                self._event_failures = 0
+                self._event_retry_at = 0
 
     async def _publish(self, snapshot, history=None):
         """Compatibility helper for callers publishing pre-rendered text snapshots.

@@ -192,6 +192,8 @@ Slash Command가 늦게 보이면 Discord를 새로고침하세요. 명령이 �
 
 알림은 상태가 전이할 때만 보내며 세션 ID·도구·원인·UTC 시간·전이 번호를 포함합니다. 승인 요청/오류를 완료/일반 상태보다 먼저 전송합니다. 발송 실패 이벤트는 메모리 outbox에 남겨 다음 상태가 와도 재시도합니다. 중요한 이벤트가 먼저 도착하므로 표시된 시간/전이 번호를 함께 확인하세요. outbox는 프로세스 재시작 후 복구하지 않습니다.
 
+전송 확인 시 대기 중복 키를 제거하고, 늦은 중복 재전달은 최근 1,024개 키의 LRU로 억제합니다. 이 범위를 벗어난 과거 이벤트는 다시 들어올 수 있습니다. 대기 중이거나 전송에 실패한 알림은 LRU 용량 때문에 버리지 않으며, 중복 방지 상태의 크기는 대기 이벤트 수 + 최대 1,024개입니다. 동시 알림 발송 경로는 하나씩 처리합니다.
+
 ## 지표와 재현 가능한 성능 비교
 
 `/session status <id>`에서 snapshot 생성, 실제 Discord edit, 변경 행/블록, 중복 생략, 성공한 전체 갱신 횟수와 누적 전송 대기 시간을 확인합니다. 큐 대기 시간은 성공적으로 반영한 프레임의 enqueue→적용 시간 합계입니다.
@@ -221,6 +223,8 @@ python3 -m venv .venv
 .venv/bin/python scripts/benchmark_sync.py
 .venv/bin/python -m compileall -q dishell main.py scripts
 ```
+
+실제 Discord/CLI를 이용한 검증 절차와 예상 결과는 [수동 스모크 테스트](docs/MANUAL_SMOKE_TEST.md)에 있습니다.
 
 CI는 Python 3.10·3.12에서 같은 테스트와 benchmark를 실행합니다. 외부 AI CLI, Discord 토큰 또는 API 인증이 없어도 테스트합니다. 기존 AGY 실행·키·bracketed paste·화면·리사이즈 테스트를 유지하며, 봇 테스트는 새 승인 정책을 검증하도록 확장했습니다.
 
