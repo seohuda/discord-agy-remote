@@ -1,6 +1,6 @@
 """Parsing of Discord DM content into actions against the local agy session.
 
-Only ``/rc``, ``/key`` and ``/help`` are intercepted. Every other message --
+``/rc``, ``/key``, ``/say``, ``/session(s)`` and ``/help`` are intercepted. Other messages --
 including agy's own slash commands such as ``/model`` -- is forwarded to the
 PTY as-is. A leading ``//`` escapes one slash, so ``//rc off`` types the literal
 text ``/rc off`` into agy.
@@ -12,14 +12,18 @@ from .keys import UnknownKey, key_names, resolve_keys
 
 HELP_TEXT = (
     "**discord-agy-remote**\n"
-    "· 일반 메시지 → agy 입력창에 입력 후 전송\n"
+    "· 일반 메시지 → 활성 세션 입력 승인 요청 (기본 읽기 전용)\n"
+    "· `/sessions` → 세션 목록\n"
+    "· `/session start <agy|codex|claude|opencode>` → 세션 시작 승인 요청\n"
+    "· `/session attach|status|stop <id>` → 연결·상태·종료\n"
+    "· `/session history <id> [page]` → 스크롤 기록 (0=최근)\n"
     "· `/key <이름>...` → 특수키 전송 (예: `/key esc`, `/key down down enter`)\n"
     "· `/say <텍스트>` → 슬래시로 시작하는 내용도 그대로 입력\n"
     "· `/rc off` → 원격 제어 종료\n"
     "· `/rc status` → 세션 상태 확인\n"
     "· `//텍스트` → 앞의 슬래시 하나를 없애고 그대로 전송\n"
     "\n`/` 를 치면 뜨는 자동완성 목록에서 골라도 되고, 그냥 텍스트로 쳐도 됩니다.\n"
-    "메뉴에서 항목을 고를 때는 `/key down down enter` 처럼 이동 키를 이어 보내세요.\n"
+    "입력·키·관리 작업은 60초 이내 소유자 버튼 승인이 필요합니다. 자동 Enter는 없습니다.\n"
     f"\n사용 가능한 키: `{'`, `'.join(key_names())}`"
 )
 
@@ -36,6 +40,7 @@ class Action:
     payload: bytes = b""
     message: str = ""
     key_names: list[str] = field(default_factory=list)
+    arguments: tuple[str, ...] = ()
 
 
 def text_action(text: str) -> Action:
@@ -66,6 +71,23 @@ def parse_remote_message(content: str) -> Action:
 
     if head == "/help":
         return Action(kind="help", message=HELP_TEXT)
+
+    if head == "/sessions":
+        return Action(kind="sessions") if not args else Action(kind="error", message="사용법: `/sessions`")
+
+    if head == "/session":
+        usage = "사용법: `/session start <agy|codex|claude|opencode>` · `/session attach|status|stop|history <id>`"
+        if len(args) == 2 and args[0] in ("start", "attach", "status", "stop"):
+            if args[0] == "start" and args[1] not in ("agy", "codex", "claude", "opencode"):
+                return Action(kind="error", message=usage)
+            return Action(kind="session_" + args[0], arguments=tuple(args[1:]))
+        if len(args) in (2, 3) and args[0] == "history":
+            if len(args) == 2 or (args[2].isdigit() and len(args[2]) <= 5):
+                return Action(kind="session_history", arguments=tuple(args[1:]))
+        return Action(kind="error", message=usage)
+
+    if head == "/say":
+        return text_action(rest) if rest.strip() else Action(kind="error", message="사용법: `/say <텍스트>`")
 
     if head == "/rc":
         sub = args[0].lower() if args else ""

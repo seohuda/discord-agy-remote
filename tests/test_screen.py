@@ -104,3 +104,11 @@ def test_popping_history_twice_does_not_repeat_lines():
         screen.feed(f"line {i}\r\n".encode())
     assert screen.pop_history()
     assert screen.pop_history() == []
+
+
+def test_history_renderer_respects_utf16_limits_and_truncation_marker_budget():
+    from dishell.screen import utf16_len
+    chunks = render_for_discord("🙂" * 600 + "\n" + "x\n" * 100, limit=200)
+    assert all(utf16_len(chunk) <= 200 for chunk in chunks)
+    chunks = render_for_discord("x\n" * 300, limit=100)
+    assert all(utf16_len(chunk) <= 100 for chunk in chunks)

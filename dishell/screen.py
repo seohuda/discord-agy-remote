@@ -123,6 +123,11 @@ TRUNCATED = "...(출력이 너무 길어 상단이 생략되었습니다)..."
 MAX_CHUNKS = 4
 
 
+def utf16_len(text: str) -> int:
+    """Discord limits count UTF-16 code units, including astral characters."""
+    return len(text.encode("utf-16-le")) // 2
+
+
 def _fence(lines: list[str]) -> str:
     return FENCE_OPEN + "\n".join(lines) + FENCE_CLOSE
 
@@ -160,7 +165,7 @@ def render_for_discord(
         # A single line can outgrow the budget on its own (a long pasted path,
         # say), so it is split rather than sent over the limit and rejected.
         for piece in _split(safe, budget) or [""]:
-            cost = len(piece) + 1
+            cost = utf16_len(piece) + 1
             if current and current_len + cost > budget:
                 groups.append(current)
                 current, current_len = [], 0
@@ -175,9 +180,22 @@ def render_for_discord(
         # The marker takes the place of the oldest surviving line so the
         # first chunk stays within the limit.
         groups[0] = [TRUNCATED, *groups[0][1:]]
+        while len(groups[0]) > 1 and utf16_len("\n".join(groups[0])) > budget:
+            groups[0].pop(1)
+        groups[0][0] = _split(groups[0][0], budget)[0]
 
     return [_fence(group) for group in groups]
 
 
 def _split(line: str, width: int) -> list[str]:
-    return [line[i:i + width] for i in range(0, len(line), width)]
+    groups, current, size = [], [], 0
+    for char in line:
+        cost = 2 if ord(char) > 0xFFFF else 1
+        if current and size + cost > width:
+            groups.append("".join(current))
+            current, size = [], 0
+        current.append(char)
+        size += cost
+    if current:
+        groups.append("".join(current))
+    return groups

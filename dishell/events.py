@@ -83,7 +83,9 @@ class EventDetector:
             self._exited = True
         else:
             if structured is not None:
-                self._structured = self.plugin.detect_structured(structured)
+                candidate = self.plugin.detect_structured(structured)
+                if candidate.event_type != EventType.UNKNOWN:
+                    self._structured = candidate
             signal = self._structured or self.plugin.detect_event(snapshot)
         if signal.event_type != self._candidate:
             self._candidate = signal.event_type

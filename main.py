@@ -9,18 +9,24 @@ from dotenv import load_dotenv
 
 from dishell.launch import LaunchError, resolve_agy
 from dishell.manager import DishellManager
+from dishell.plugins import default_plugins
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-AGY_BIN = os.getenv("DISHELL_AGY_BIN", "agy")
 
 
 def main() -> int:
-    args = sys.argv[1:]
+    return run_cli("agy", sys.argv[1:])
+
+
+def run_cli(plugin_id: str, args: list[str], *, auto_remote=False) -> int:
 
     load_dotenv(os.path.join(HERE, ".env"))
 
     try:
-        agy_path = resolve_agy(AGY_BIN, os.path.abspath(__file__))
+        plugins = default_plugins()
+        argv = plugins[plugin_id].build_argv(args)
+        if plugin_id == "agy":
+            argv[0] = resolve_agy(plugins["agy"].executable, os.path.abspath(__file__))
     except LaunchError as exc:
         sys.stderr.write(f"[Dishell] {exc}\n")
         return 127
@@ -39,11 +45,17 @@ def main() -> int:
         )
     sys.stderr.flush()
 
-    manager = DishellManager(token=token, user_id=user_id, argv=[agy_path, *args])
     try:
+        manager = DishellManager(token=token, user_id=user_id, argv=argv,
+                                 plugin_id=plugin_id, plugins=plugins,
+                                 local_args=args, auto_remote=auto_remote)
         return asyncio.run(manager.run())
     except KeyboardInterrupt:
         return 130
+    except (ValueError, RuntimeError, OSError) as exc:
+        # Do not echo arguments, environment values, or exception payloads.
+        sys.stderr.write(f"[Dishell] 시작/실행 실패: {type(exc).__name__}\n")
+        return 1
 
 
 if __name__ == "__main__":

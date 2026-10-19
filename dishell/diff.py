@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from .screen import DISCORD_LIMIT, ScreenFrame
+from .screen import DISCORD_LIMIT, ScreenFrame, _split, utf16_len
 
 MAX_BLOCKS = 16
 MAX_COLS = 240
@@ -87,10 +87,6 @@ class ScreenDiffEngine:
                            frame, scrolled, resized, reset)
 
 
-def utf16_len(text: str) -> int:
-    return len(text.encode("utf-16-le")) // 2
-
-
 def render_blocks(frame: ScreenFrame) -> list[str]:
     """Up to 16 full-screen blocks, bounded using worst-case UTF-16/fence cost.
 
@@ -105,7 +101,16 @@ def render_blocks(frame: ScreenFrame) -> list[str]:
     blocks = []
     for start in range(0, frame.rows, per_block):
         lines = frame.lines[start:start + per_block]
-        safe = "\n".join(lines).replace("```", "`\u200b``")
+        safe_lines = []
+        row_limit = (DISCORD_LIMIT - 40) // per_block - 1
+        for line in lines:
+            safe = line.replace("```", "`\u200b``")
+            # A pyte cell may accumulate arbitrarily many combining marks.
+            # Keep row positions and visibly mark that exceptional truncation.
+            if utf16_len(safe) > row_limit:
+                safe = _split(safe, row_limit - 12)[0] + "…[행 생략]"
+            safe_lines.append(safe)
+        safe = "\n".join(safe_lines)
         block = "```text\n" + (safe if safe.strip() else "(빈 화면)") + "\n```"
         if utf16_len(block) > DISCORD_LIMIT:
             raise ValueError("screen row exceeds configured geometry")
@@ -171,9 +176,6 @@ class BlockPublisher:
                 pending = self._pending
                 revision, blocks, queued, full = pending
                 epoch = self._epoch
-                if full:
-                    self.metrics.full_refreshes += 1
-                self.metrics.queue_wait_seconds += max(0, self.clock() - queued)
                 try:
                     for index, block in enumerate(blocks):
                         # Changes that arrived at an await supersede the old frame.
@@ -184,6 +186,8 @@ class BlockPublisher:
                                 continue
                             await self.transport.edit(self.messages[index], index, block)
                             self.metrics.discord_edits += 1
+                            if epoch != self._epoch:
+                                break
                         else:
                             message = await self.transport.send(index, block)
                             self.metrics.discord_sends += 1
@@ -202,6 +206,9 @@ class BlockPublisher:
                             self.messages.pop()
                             self._contents.pop()
                         if epoch == self._epoch and self._pending is pending:
+                            if full:
+                                self.metrics.full_refreshes += 1
+                            self.metrics.queue_wait_seconds += max(0, self.clock() - queued)
                             self.applied_revision = revision
                             self._pending = None
                             self._force = False

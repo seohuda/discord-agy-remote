@@ -31,7 +31,12 @@ class PtyProcess:
         pid, master_fd = pty.fork()
         if pid == 0:  # child
             try:
-                os.execvp(self.argv[0], self.argv)
+                # Set geometry before exec: a fast child can query its size
+                # before the parent gets scheduled after fork.
+                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+                child_env = os.environ.copy()
+                child_env.pop("DISCORD_TOKEN", None)
+                os.execvpe(self.argv[0], self.argv, child_env)
             except OSError as exc:
                 sys.stderr.write(f"[Dishell] cannot execute {self.argv[0]!r}: {exc}\n")
                 sys.stderr.flush()
@@ -39,6 +44,7 @@ class PtyProcess:
 
         self.pid = pid
         self.master_fd = master_fd
+        os.set_inheritable(master_fd, False)
         os.set_blocking(master_fd, False)
         self.set_winsize(cols, rows)
 
@@ -51,13 +57,15 @@ class PtyProcess:
         except OSError:
             pass
 
-    def write(self, data: bytes) -> bytes:
+    def write(self, data: bytes, *, strict: bool = False) -> bytes:
         """Write to the child's terminal; return whatever did not fit.
 
         The master fd is non-blocking, so a large paste can be accepted only
         partially. The caller is expected to retry the remainder rather than
         drop it, which would silently truncate a prompt.
         """
+        if self.master_fd is None and strict:
+            raise OSError("closed_pty")
         if self.master_fd is None or not data:
             return b""
         view = memoryview(data)
@@ -67,6 +75,8 @@ class PtyProcess:
             except BlockingIOError:
                 return bytes(view)
             except OSError:
+                if strict:
+                    raise
                 return b""
             if not written:
                 return bytes(view)
@@ -110,9 +120,31 @@ class PtyProcess:
     def terminate(self) -> None:
         if self.pid is not None and self.exit_status is None:
             try:
-                os.kill(self.pid, signal.SIGTERM)
+                os.killpg(self.pid, signal.SIGTERM)
             except OSError:
                 pass
+
+    async def shutdown(self, grace: float = .5) -> int:
+        """Bounded group termination, escalation and reaping without blocking asyncio."""
+        # pty.fork's child is a session/group leader. Also kill surviving group
+        # members if the leader has already exited.
+        if self.pid is not None:
+            try:
+                os.killpg(self.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = asyncio.get_running_loop().time() + grace
+        while self.reap(block=False) is None and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(.02)
+        if self.pid is not None:
+            try:
+                os.killpg(self.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            return await asyncio.to_thread(self.reap) or 0
+        finally:
+            self.close()
 
     def close(self) -> None:
         if self.master_fd is not None:

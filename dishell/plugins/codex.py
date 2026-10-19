@@ -20,4 +20,6 @@ class CodexPlugin(BasePlugin):
         error = event.get("error")
         if isinstance(error, dict) and isinstance(error.get("message"), str):
             reason += ": " + error["message"]
+        elif kind == "error" and isinstance(event.get("message"), str):
+            reason += ": " + event["message"]
         return Signal(state, 1.0, reason, True)

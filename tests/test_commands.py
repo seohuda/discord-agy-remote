@@ -67,3 +67,20 @@ def test_help():
 
 def test_blank_message_is_ignored():
     assert parse_remote_message("   \n ").kind == "error"
+
+
+def test_sessions_commands_and_literal_escape_are_unambiguous():
+    assert parse_remote_message("/sessions").kind == "sessions"
+    assert parse_remote_message("/session start codex").arguments == ("codex",)
+    assert parse_remote_message("/session attach codex-1").kind == "session_attach"
+    assert parse_remote_message("/session status codex-1").kind == "session_status"
+    assert parse_remote_message("/session stop codex-1").kind == "session_stop"
+    assert parse_remote_message("/session history codex-1 2").arguments == ("codex-1", "2")
+    assert parse_remote_message("//session start codex").payload == b"/session start codex\r"
+    assert parse_remote_message("/say /session start codex").payload == b"/session start codex\r"
+
+
+def test_discord_cannot_register_executables_or_pass_launch_options():
+    for text in ("/session start /bin/sh", "/session start codex --dangerously-bypass-approvals-and-sandbox",
+                 "/session start codex;sh", "/session stop id extra", "/session history id -1"):
+        assert parse_remote_message(text).kind == "error"

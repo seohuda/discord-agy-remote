@@ -161,3 +161,30 @@ def test_reconnect_during_inflight_send_does_not_keep_old_message():
         await p.flush()
         assert len(p.messages) == 3
     asyncio.run(scenario())
+
+
+def test_reconnect_during_edit_fences_old_contents_without_index_error():
+    async def scenario():
+        t = Transport()
+        p, d = BlockPublisher(t), ScreenDiffEngine()
+        p.submit(d.update(frame()))
+        await p.flush()
+        patch = d.update(frame(["changed"] * 24))
+        t.on_edit = p.reconnect
+        p.submit(patch)
+        assert not await p.flush()
+        assert p.metrics.failures == 0
+        p.submit(patch)
+        await p.flush()
+        assert p.applied_revision == patch.revision
+        assert len(p.messages) == 3
+    asyncio.run(scenario())
+
+
+def test_pathological_combining_marks_do_not_prevent_other_rows_from_syncing():
+    screen = TerminalScreen(60, 24)
+    screen.feed(("x" + "\u0301" * 5000 + "\r\nnext row").encode())
+    blocks = render_blocks(screen.capture())
+    assert all(utf16_len(b) < 3900 for b in blocks)
+    assert "행 생략" in blocks[0]
+    assert "next row" in blocks[0]
