@@ -42,6 +42,28 @@ def test_choice_footer_catches_prompts_with_unknown_wording():
     assert classify(unknown) == APPROVAL
 
 
+def test_scattered_navigate_and_confirm_words_do_not_trigger_approval():
+    prose = (
+        "Users navigate to the settings page.\n"
+        "Click save to confirm the update.\n"
+        "● Working...\n"
+        "esc to interrupt"
+    )
+    assert classify(prose) == "busy"
+
+
+def test_choice_footer_words_far_above_the_footer_do_not_trigger_approval():
+    body = "\n".join(
+        [
+            "Docs mention: navigate and confirm",
+            *(f"output line {i}" for i in range(10)),
+            "> ",
+            "? for shortcuts",
+        ]
+    )
+    assert classify(body) == "idle"
+
+
 def test_classify_recognises_the_three_states():
     assert classify(WORKING) == "busy"
     assert classify(PROMPT) == APPROVAL

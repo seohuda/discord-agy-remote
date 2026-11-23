@@ -26,6 +26,7 @@ APPROVAL_MARKERS = (
 # agy renders this footer under any modal choice list. Matching it catches
 # prompts whose wording is not enumerated above.
 CHOICE_FOOTER_MARKERS = ("navigate", "confirm")
+CHOICE_FOOTER_TAIL_LINES = 5
 
 BUSY_MARKERS = ("esc to interrupt",)
 
@@ -43,7 +44,9 @@ def classify(snapshot: str) -> str:
     text = snapshot.lower()
     if any(marker in text for marker in APPROVAL_MARKERS):
         return APPROVAL
-    if all(marker in text for marker in CHOICE_FOOTER_MARKERS):
+    non_empty = [line for line in text.splitlines() if line.strip()]
+    tail = non_empty[-CHOICE_FOOTER_TAIL_LINES:]
+    if any(all(marker in line for marker in CHOICE_FOOTER_MARKERS) for line in tail):
         return APPROVAL
     if any(marker in text for marker in BUSY_MARKERS):
         return _BUSY
