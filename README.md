@@ -74,7 +74,7 @@ DISCORD_USER_ID=본인_디스코드_유저_ID
 
 ![슬래시 명령 주의사항](assets/slash_example.png)
 
-`/` 를 치면 뜨는 자동완성 목록에서 골라야 슬래시 명령으로 동작합니다. `/key`, `/rc`, `/help` 는 위 사진처럼 일반 텍스트로 쳐도 같게 동작하지만, `/say` 는 자동완성으로 고를 때만 명령으로 인식됩니다.
+`/` 를 치면 뜨는 자동완성 목록에서 고르거나 일반 텍스트로 쳐도 됩니다. `/key`, `/rc`, `/say`, `/help` 모두 양쪽 방식으로 동일하게 동작합니다.
 
 ## 사용법
 
@@ -108,12 +108,12 @@ agy
 | `/rc off` | 원격 제어 종료, 봇 연결 해제 |
 | `/rc status` | 현재 상태 확인 |
 
-디스코드 DM에서 사용할 수 있는 명령입니다. `/say` 를 뺀 나머지는 자동완성에서 고르든 그냥 텍스트로 치든 동일하게 동작합니다.
+디스코드 DM에서 사용할 수 있는 명령입니다. 자동완성에서 고르든 그냥 텍스트로 치든 동일하게 동작합니다.
 
 | 디스코드 DM | 동작 |
 | --- | --- |
 | 아무 텍스트 | `agy` 입력창에 입력 후 전송 (여러 줄은 bracketed paste로 한 번에 입력) |
-| `/say <텍스트>` | 위와 같지만 `/model` 처럼 슬래시로 시작하는 내용도 그대로 입력 (자동완성 전용) |
+| `/say <텍스트>` | 위와 같지만 `/model`·`/rc off` 처럼 슬래시로 시작하는 내용도 그대로 입력 |
 | `/key esc` | 특수키 전송 |
 | `/key down down enter` | 여러 키 순서대로 전송 (메뉴·승인 프롬프트 조작용) |
 | `/rc off` | 원격에서 원격 제어 종료 |
@@ -123,7 +123,7 @@ agy
 
 `/model` 처럼 `agy` 자신의 슬래시 명령은 가로채지 않고 그대로 전달됩니다.
 
-사용 가능한 키: `enter` `esc` `tab` `shift-tab` `space` `backspace` `delete` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `ctrl-a`~`ctrl-w` `y` `n`
+사용 가능한 키: `enter` `esc` `tab` `shift-tab` `space` `backspace` `delete` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `ctrl-a` `ctrl-b` `ctrl-c` `ctrl-d` `ctrl-e` `ctrl-l` `ctrl-n` `ctrl-p` `ctrl-r` `ctrl-u` `ctrl-w` `y` `n`
 
 ### 메뉴에서 항목 고르기
 
@@ -188,6 +188,7 @@ agy
 | `dishell/alerts.py` | 승인 대기 / 작업 완료 전이 감지 |
 | `dishell/launch.py` | 실제 agy 실행 파일 확인 및 자기 참조 차단 |
 | `dishell/localcmd.py` | 로컬 raw 입력에서 `/rc` 명령 가로채기 |
+| `dishell/keys.py` | 특수키 이름 → 터미널 이스케이프 시퀀스 매핑 |
 | `dishell/commands.py` | 디스코드 메시지 → 동작 파싱 |
 | `dishell/bot.py` | 디스코드 클라이언트 및 발신자 인증 |
 | `dishell/manager.py` | 전체 배선, 봇 수명주기, 화면 발행 루프 |
