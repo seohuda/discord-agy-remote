@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import os
+import signal
 import time
 
 import discord
@@ -34,7 +35,10 @@ FORBIDDEN_HELP = (
 
 def _int_env(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
-    return int(raw) if raw.lstrip("-").isdigit() else default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 class DishellManager:
@@ -63,12 +67,23 @@ class DishellManager:
         self._last_snapshot: str | None = None
         self._start_new_message = False
         self._pending_alert: str | None = None
+        self._pending_history: list[str] = []
         self._backlog = bytearray()
         self._writer_armed = False
         self._debug_path = os.getenv("DISHELL_DEBUG", "")
         self._status_shown = False
         self._sticky_text = ""
+        self._starting = False
+        self._ready_task: asyncio.Task | None = None
+        self._tasks: set[asyncio.Task] = set()
         self.remote_cols = _int_env("DISHELL_COLS", DEFAULT_REMOTE_COLS)
+
+    def _spawn(self, coro) -> asyncio.Task:
+        """Create a background task while keeping a strong reference to it."""
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     def _debug(self, message: str) -> None:
         """Append a diagnostic line when DISHELL_DEBUG points at a file."""
@@ -89,34 +104,55 @@ class DishellManager:
             f"start argv={self.argv} size={cols}x{rows} "
             f"stdin_fd={self.local.fd} is_tty={self.local.is_tty} pid={os.getpid()}"
         )
-        self.pty.spawn(cols, rows)
-        self.local.enter_raw()
-
-        self._loop.add_reader(self.pty.master_fd, self._on_pty_readable)
-        if self.local.is_tty:
-            self._loop.add_reader(self.local.fd, self._on_stdin_readable)
-        self.local.on_resize(self._loop, self._on_resize)
-
         try:
+            self.pty.spawn(cols, rows)
+            self.local.enter_raw()
+
+            self._loop.add_reader(self.pty.master_fd, self._on_pty_readable)
+            if self.local.is_tty:
+                self._loop.add_reader(self.local.fd, self._on_stdin_readable)
+            self.local.on_resize(self._loop, self._on_resize)
+            with contextlib.suppress(NotImplementedError, ValueError):
+                self._loop.add_signal_handler(signal.SIGTERM, self._finish)
+
             await self._finished
         finally:
             await self._shutdown()
         return self.pty.reap() or 0
 
     async def _shutdown(self) -> None:
-        if self._loop is not None:
-            with contextlib.suppress(Exception):
-                self._loop.remove_reader(self.pty.master_fd)
-            with contextlib.suppress(Exception):
-                self._loop.remove_writer(self.pty.master_fd)
-            if self.local.is_tty:
+        try:
+            if self._loop is not None:
                 with contextlib.suppress(Exception):
-                    self._loop.remove_reader(self.local.fd)
-        await self._stop_bot(announce="🔴 **원격 제어 종료** — agy 세션이 끝났습니다.")
-        self.pty.terminate()
-        self.pty.reap()
-        self.pty.close()
-        self.local.restore()
+                    self._loop.remove_signal_handler(signal.SIGTERM)
+                if self.pty.master_fd is not None:
+                    with contextlib.suppress(Exception):
+                        self._loop.remove_reader(self.pty.master_fd)
+                    with contextlib.suppress(Exception):
+                        self._loop.remove_writer(self.pty.master_fd)
+                if self.local.is_tty:
+                    with contextlib.suppress(Exception):
+                        self._loop.remove_reader(self.local.fd)
+            # Restore the user's tty before network teardown or child reaping,
+            # so a slow disconnect or stubborn child never leaves it in raw mode.
+            self.local.restore()
+            await self._stop_bot(announce="🔴 **원격 제어 종료** — agy 세션이 끝났습니다.")
+            for task in list(self._tasks):
+                task.cancel()
+            if self._tasks:
+                await asyncio.gather(*self._tasks, return_exceptions=True)
+                self._tasks.clear()
+            if self.pty.reap(block=False) is None:
+                self.pty.terminate()
+                deadline = time.monotonic() + 2.0
+                while self.pty.reap(block=False) is None and time.monotonic() < deadline:
+                    await asyncio.sleep(0.05)
+                if self.pty.reap(block=False) is None:
+                    self.pty.kill()
+                    self.pty.reap()
+            self.pty.close()
+        finally:
+            self.local.restore()
 
     def _finish(self) -> None:
         if self._finished is not None and not self._finished.done():
@@ -157,7 +193,7 @@ class DishellManager:
         self._write_to_agy(forward)
         self._show_pending(self.filter.pending)
         for command in commands:
-            asyncio.create_task(self._handle_local_command(command))
+            self._spawn(self._handle_local_command(command))
 
     def _sticky(self, text: str) -> None:
         """Show a message that survives agy's repaints.
@@ -228,79 +264,116 @@ class DishellManager:
         self.pty.set_winsize(cols, rows)
 
     async def _handle_local_command(self, command: str) -> None:
+        repaint = False
         if command == "/rc on":
             if self.rc_enabled:
-                self.local.notice("[Dishell] 원격 제어는 이미 켜져 있습니다.")
+                self._sticky("[Dishell] 원격 제어는 이미 켜져 있습니다.")
+            elif self._starting:
+                self._sticky("[Dishell] 디스코드 봇 연결이 이미 진행 중입니다.")
             else:
                 await self._start_bot()
+                repaint = self.rc_enabled
         elif command == "/rc off":
-            if not self.rc_enabled:
-                self.local.notice("[Dishell] 원격 제어는 이미 꺼져 있습니다.")
+            if not self.rc_enabled and not self._starting:
+                self._sticky("[Dishell] 원격 제어는 이미 꺼져 있습니다.")
             else:
+                was_enabled = self.rc_enabled
                 await self._stop_bot(announce="🔴 **원격 제어 종료**")
-                self.local.notice("[Dishell] 원격 제어를 껐습니다.")
+                self._sticky("[Dishell] 원격 제어를 껐습니다.")
+                repaint = was_enabled
         elif command == "/rc status":
-            state = "ON" if self.rc_enabled else "OFF"
-            self.local.notice(f"[Dishell] 원격 제어: {state} · agy pid {self.pty.pid}")
-        await self._force_repaint()
+            state = "ON" if self.rc_enabled else ("연결 중" if self._starting else "OFF")
+            self._sticky(f"[Dishell] 원격 제어: {state} · agy pid {self.pty.pid}")
+        if repaint:
+            await self._force_repaint()
 
     # ----------------------------------------------------------- bot control
 
     async def _start_bot(self) -> None:
+        if self._starting or self.rc_enabled:
+            return
         if not self.token or not self.user_id:
-            self.local.notice(
+            self._sticky(
                 "[Dishell] .env 의 DISCORD_TOKEN / DISCORD_USER_ID 가 설정되지 않았습니다."
             )
             return
-        self.local.notice("[Dishell] 디스코드 봇 연결 중...")
-        self.client = DishellBot(manager=self)
-        self.bot_task = asyncio.create_task(self.client.start(self.token))
+        self._starting = True
+        self._sticky("[Dishell] 디스코드 봇 연결 중...")
+        try:
+            self.client = DishellBot(manager=self)
+            self.bot_task = asyncio.create_task(self.client.start(self.token))
 
-        # Race readiness against the login task: a bad token makes start()
-        # raise, and waiting only on wait_until_ready() would sit out the full
-        # timeout and then report "시간 초과" instead of the real reason.
-        ready = asyncio.create_task(self.client.wait_until_ready())
-        done, _ = await asyncio.wait(
-            {ready, self.bot_task},
-            timeout=READY_TIMEOUT,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+            # Race readiness against the login task: a bad token makes start()
+            # raise, and waiting only on wait_until_ready() would sit out the full
+            # timeout and then report "시간 초과" instead of the real reason.
+            ready = asyncio.create_task(self.client.wait_until_ready())
+            self._ready_task = ready
+            done, _ = await asyncio.wait(
+                {ready, self.bot_task},
+                timeout=READY_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-        if ready not in done:
-            ready.cancel()
-            reason = "시간 초과 (네트워크 또는 토큰 확인)"
-            if self.bot_task in done:
-                exc = self.bot_task.exception()
-                if isinstance(exc, discord.LoginFailure):
-                    reason = "토큰이 거부되었습니다. 포털에서 Reset Token 후 .env 갱신"
-                elif isinstance(exc, discord.PrivilegedIntentsRequired):
-                    reason = "포털에서 MESSAGE CONTENT INTENT 를 켜야 합니다"
-                elif exc is not None:
-                    reason = f"{type(exc).__name__}: {exc}"
-            self._sticky(f"[Dishell] 디스코드 연결 실패 · {reason}")
-            self._debug(f"start_bot failed: {reason}")
-            await self._stop_bot()
+            if ready not in done or ready.cancelled():
+                if not ready.done():
+                    ready.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ready
+                if self.bot_task is None or self.bot_task.cancelled():
+                    return  # aborted by /rc off or shutdown
+                reason = "시간 초과 (네트워크 또는 토큰 확인)"
+                if self.bot_task in done:
+                    exc = self.bot_task.exception()
+                    if isinstance(exc, discord.LoginFailure):
+                        reason = "토큰이 거부되었습니다. 포털에서 Reset Token 후 .env 갱신"
+                    elif isinstance(exc, discord.PrivilegedIntentsRequired):
+                        reason = "포털에서 MESSAGE CONTENT INTENT 를 켜야 합니다"
+                    elif exc is not None:
+                        reason = f"{type(exc).__name__}: {exc}"
+                self._sticky(f"[Dishell] 디스코드 연결 실패 · {reason}")
+                self._debug(f"start_bot failed: {reason}")
+                await self._stop_bot()
+                return
+
+            # Prove the DM channel actually works before declaring success --
+            # a bot with no mutual server cannot message its owner at all.
+            if not await self._notify(
+                "🟢 **원격 제어 시작** — 이 DM으로 로컬 agy 세션을 조작합니다. `/help` 로 사용법 확인."
+            ):
+                if self.client is not None:
+                    self._sticky("[Dishell] 연결됐지만 DM 을 보낼 수 없습니다 · 위 안내 참고")
+                    await self._stop_bot()
+                return
+
+            if self.client is None or self.bot_task is None or self.bot_task.done():
+                return
+
+            self.rc_enabled = True
+            # Reset screen and narrow agy so its lines survive Discord's code
+            # block width without carrying stale frames from an earlier session.
+            self.screen = TerminalScreen(*self._size())
+            self._apply_size()
+            self.detector = AlertDetector()
+            self._last_snapshot = None
+            self._live_messages = []
+            self._pending_alert = None
+            self._pending_history = []
+            self._start_new_message = True
+            self.bot_task.add_done_callback(self._on_bot_task_done)
+            self.publish_task = asyncio.create_task(self._publish_loop())
+            self._sticky("[Dishell] 원격 제어를 켰습니다. 디스코드 DM으로 연결되었습니다.")
+        finally:
+            self._starting = False
+            self._ready_task = None
+
+    def _on_bot_task_done(self, task: asyncio.Task) -> None:
+        if task is not self.bot_task or not self.rc_enabled or task.cancelled():
             return
-
-        # Prove the DM channel actually works before declaring success --
-        # a bot with no mutual server cannot message its owner at all.
-        if not await self._notify(
-            "🟢 **원격 제어 시작** — 이 DM으로 로컬 agy 세션을 조작합니다. `/help` 로 사용법 확인."
-        ):
-            self._sticky("[Dishell] 연결됐지만 DM 을 보낼 수 없습니다 · 위 안내 참고")
-            await self._stop_bot()
-            return
-
-        self.rc_enabled = True
-        # Narrow agy so its lines survive Discord's code block width.
-        self._apply_size()
-        self.detector = AlertDetector()
-        self._last_snapshot = None
-        self._live_messages = []
-        self._pending_alert = None
-        self._start_new_message = True
-        self.publish_task = asyncio.create_task(self._publish_loop())
-        self.local.notice("[Dishell] 원격 제어를 켰습니다. 디스코드 DM으로 연결되었습니다.")
+        exc = task.exception()
+        reason = f"{type(exc).__name__}: {exc}" if exc is not None else "연결이 종료되었습니다"
+        self._debug(f"bot_task exited unexpectedly: {reason}")
+        self._sticky(f"[Dishell] 디스코드 연결 끊김 · {reason}")
+        self._spawn(self._stop_bot())
 
     async def _stop_bot(self, announce: str | None = None) -> None:
         if announce and self.rc_enabled:
@@ -309,6 +382,12 @@ class DishellManager:
         self.rc_enabled = False
         if was_enabled:
             self._apply_size()  # give the local terminal its full width back
+
+        if self._ready_task:
+            self._ready_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ready_task
+            self._ready_task = None
 
         if self.publish_task:
             self.publish_task.cancel()
@@ -329,9 +408,13 @@ class DishellManager:
 
         self._user = None
         self._live_messages = []
+        self._pending_history = []
 
     def on_bot_ready(self, username: str) -> None:
         self.local.notice(f"[Dishell] 디스코드 로그인: {username}")
+
+    def on_sync_error(self, exc: Exception) -> None:
+        self._debug(f"slash command sync failed: {exc!r}")
 
     # ------------------------------------------------------------- discord
 
@@ -381,9 +464,12 @@ class DishellManager:
         The reply has to go out before the bot disconnects, so the teardown is
         scheduled rather than awaited.
         """
-        self.local.notice("[Dishell] 디스코드에서 원격 제어를 껐습니다.")
-        asyncio.create_task(self._stop_bot())
-        asyncio.create_task(self._force_repaint())
+        self._sticky("[Dishell] 디스코드에서 원격 제어를 껐습니다.")
+        self._spawn(self._remote_off())
+
+    async def _remote_off(self) -> None:
+        await self._stop_bot()
+        await self._force_repaint()
 
     def send_input(self, payload: bytes) -> None:
         """Type ``payload`` into agy and post the next screen as a new message,
@@ -427,8 +513,12 @@ class DishellManager:
                 if snapshot == self._last_snapshot and not self._start_new_message:
                     continue
                 # Scrolled-off lines are only worth carrying into a fresh
-                # message; an edit keeps showing the same live screen.
-                history = self.screen.pop_history() if self._start_new_message else None
+                # message; an edit keeps showing the same live screen. Hold
+                # them until chunk 0 succeeds so a transient error cannot drop
+                # history.
+                if self._start_new_message:
+                    self._pending_history.extend(self.screen.pop_history())
+                history = list(self._pending_history) if self._start_new_message else None
                 await self._publish(snapshot, history)
             except asyncio.CancelledError:
                 raise
@@ -469,6 +559,13 @@ class DishellManager:
                             embed=embed,
                         )
                     )
+                    if fresh and i == 0:
+                        # The fresh message and any push-alert header have been
+                        # delivered; if a later chunk fails, resume by editing
+                        # chunk 0 and appending the rest instead of re-pinging.
+                        self._start_new_message = False
+                        self._pending_alert = None
+                        self._pending_history.clear()
 
             # The screen shrank; drop the messages that are no longer covered.
             while len(self._live_messages) > len(chunks):
@@ -477,11 +574,12 @@ class DishellManager:
 
             self._start_new_message = False
             self._pending_alert = None
+            self._pending_history.clear()
 
         except discord.Forbidden:
             self.local.notice(FORBIDDEN_HELP)
             self.local.notice("[Dishell] 원격 제어를 종료합니다.")
-            asyncio.create_task(self._stop_bot())
+            self._spawn(self._stop_bot())
             return
         except discord.NotFound:
             self._live_messages = []  # deleted by the user; start a fresh one
