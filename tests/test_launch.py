@@ -44,3 +44,30 @@ def test_an_unrelated_binary_of_the_same_name_is_fine(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path))
     # A different file that merely lives next to the wrapper must not trip it.
     assert resolve_agy("agy", str(tmp_path / "main.py")) == str(binary)
+
+
+def test_main_reads_agy_bin_from_dotenv(tmp_path, monkeypatch):
+    import main as entrypoint
+
+    custom = make_executable(tmp_path / "custom-agy")
+    (tmp_path / ".env").write_text("DISHELL_AGY_BIN=custom-agy\n")
+
+    monkeypatch.delenv("DISHELL_AGY_BIN", raising=False)
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+    monkeypatch.delenv("DISCORD_USER_ID", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "HERE", str(tmp_path))
+    monkeypatch.setattr(entrypoint.sys, "argv", ["main.py", "--version"])
+
+    launched = {}
+
+    class StubManager:
+        def __init__(self, token, user_id, argv):
+            launched["argv"] = argv
+
+        async def run(self):
+            return 0
+
+    monkeypatch.setattr(entrypoint, "DishellManager", StubManager)
+    assert entrypoint.main() == 0
+    assert launched["argv"] == [str(custom), "--version"]

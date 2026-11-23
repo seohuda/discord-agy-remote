@@ -11,16 +11,16 @@ from dishell.launch import LaunchError, resolve_agy
 from dishell.manager import DishellManager
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-AGY_BIN = os.getenv("DISHELL_AGY_BIN", "agy")
 
 
 def main() -> int:
     args = sys.argv[1:]
 
     load_dotenv(os.path.join(HERE, ".env"))
+    agy_bin = os.getenv("DISHELL_AGY_BIN", "").strip() or "agy"
 
     try:
-        agy_path = resolve_agy(AGY_BIN, os.path.abspath(__file__))
+        agy_path = resolve_agy(agy_bin, os.path.abspath(__file__))
     except LaunchError as exc:
         sys.stderr.write(f"[Dishell] {exc}\n")
         return 127
