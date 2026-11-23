@@ -29,11 +29,12 @@ if [ ! -f "$ROOT/.env" ]; then
     cp "$ROOT/.env.example" "$ROOT/.env"
     echo "==> Created .env from .env.example — edit it and fill in your token/user id."
 fi
+chmod 600 "$ROOT/.env"
 
-case "${SHELL##*/}" in
-    zsh)  PROFILE_RC="$HOME/.zshrc" ;;
-    bash) PROFILE_RC="$HOME/.bashrc" ;;
-    *)    PROFILE_RC="$HOME/.profile" ;;
+case "${SHELL:-}" in
+    */zsh|zsh)   PROFILE_RC="$HOME/.zshrc" ;;
+    */bash|bash) PROFILE_RC="$HOME/.bashrc" ;;
+    *)           PROFILE_RC="$HOME/.profile" ;;
 esac
 
 ALIAS_LINE="alias agy='\"$VENV/bin/python\" \"$ROOT/main.py\"'"
@@ -44,9 +45,25 @@ if [ -f "$PROFILE_RC" ] && grep -q "^alias agy=" "$PROFILE_RC"; then
     # only swapped in once it is written, so a failure cannot truncate the rc.
     TMP="$PROFILE_RC.dishell.tmp"
     cp "$PROFILE_RC" "$PROFILE_RC.dishell.bak"
-    grep -v "^alias agy=" "$PROFILE_RC" > "$TMP" || true
-    mv "$TMP" "$PROFILE_RC"
+    set +e
+    grep -v "^alias agy=" "$PROFILE_RC" > "$TMP"
+    grep_rc=$?
+    set -e
+    if [ "$grep_rc" -gt 1 ]; then
+        rm -f "$TMP"
+        echo "Failed to update $PROFILE_RC (grep exit $grep_rc)." >&2
+        exit 1
+    fi
+    if [ -L "$PROFILE_RC" ]; then
+        cat "$TMP" > "$PROFILE_RC"
+        rm -f "$TMP"
+    else
+        mv "$TMP" "$PROFILE_RC"
+    fi
     echo "==> Replaced an existing 'agy' alias (backup: $PROFILE_RC.dishell.bak)"
+fi
+if [ -s "$PROFILE_RC" ] && [ -n "$(tail -c 1 "$PROFILE_RC")" ]; then
+    printf '\n' >> "$PROFILE_RC"
 fi
 printf '%s\n' "$ALIAS_LINE" >> "$PROFILE_RC"
 
