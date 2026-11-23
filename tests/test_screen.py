@@ -104,3 +104,26 @@ def test_popping_history_twice_does_not_repeat_lines():
         screen.feed(f"line {i}\r\n".encode())
     assert screen.pop_history()
     assert screen.pop_history() == []
+
+
+def test_history_lines_survive_shrinking_the_screen():
+    screen = TerminalScreen(40, 3)
+    wide = "a" * 35
+    screen.feed((wide + "\r\n").encode())
+    for i in range(5):
+        screen.feed(f"line {i}\r\n".encode())
+    screen.resize(20, 3)
+    assert wide in screen.pop_history()
+
+
+def test_render_neutralises_four_or_more_backticks():
+    for run in ("````", "`````", "``````"):
+        rendered = render_for_discord(f"{run}python\ncode\n{run}")[0]
+        assert rendered.count("```") == 2
+
+
+def test_render_truncation_marker_never_exceeds_limit():
+    snapshot = "\n".join("a" * 10 for _ in range(40))
+    rendered = render_for_discord(snapshot, limit=60)
+    assert len(rendered) == 4
+    assert all(len(chunk) <= 60 for chunk in rendered)

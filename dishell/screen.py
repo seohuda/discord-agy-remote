@@ -7,6 +7,7 @@ picture is published.
 """
 
 import codecs
+import re
 
 import pyte
 
@@ -15,6 +16,8 @@ DEFAULT_ROWS = 30
 
 # Discord's embed description cap is 4096; leave room for the code fence.
 DISCORD_LIMIT = 3900
+
+_FENCE_RUN = re.compile(r"`{3,}")
 
 
 class TerminalScreen:
@@ -35,7 +38,10 @@ class TerminalScreen:
             # A history row is a sparse map keyed by column, so it has to be
             # read by index: iterating its values would drop the gaps between
             # written cells and follow write order rather than column order.
-            lines.append("".join(row[x].data for x in range(self.cols)).rstrip())
+            # Include columns beyond self.cols in case the screen shrank after
+            # the line scrolled off.
+            width = max(self.cols, max(row) + 1) if row else 0
+            lines.append("".join(row[x].data for x in range(width)).rstrip())
         return lines
 
     def feed(self, data: bytes) -> None:
@@ -92,14 +98,15 @@ def render_for_discord(
     if not lines:
         return [_fence(["(빈 화면)"])]
 
-    budget = limit - len(FENCE_OPEN) - len(FENCE_CLOSE)
+    budget = max(limit - len(FENCE_OPEN) - len(FENCE_CLOSE), 1)
     groups: list[list[str]] = []
     current: list[str] = []
     current_len = 0
 
     for line in lines:
-        # An inner fence would close ours early; a zero-width space breaks it.
-        safe = line.replace("```", "`​``")
+        # Any run of 3+ backticks would close our fence early; insert a
+        # zero-width space between backticks so even ```` stays neutralised.
+        safe = _FENCE_RUN.sub(lambda m: "\u200b".join(m.group(0)), line)
         # A single line can outgrow the budget on its own (a long pasted path,
         # say), so it is split rather than sent over the limit and rejected.
         for piece in _split(safe, budget) or [""]:
@@ -115,9 +122,13 @@ def render_for_discord(
 
     if len(groups) > MAX_CHUNKS:
         groups = groups[-MAX_CHUNKS:]
-        # The marker takes the place of the oldest surviving line so the
-        # first chunk stays within the limit.
-        groups[0] = [TRUNCATED, *groups[0][1:]]
+        # Drop enough oldest lines so adding the truncation marker never pushes
+        # the first chunk over ``limit``.
+        marker = TRUNCATED[:budget]
+        tail = groups[0][1:]
+        while tail and len("\n".join([marker, *tail])) > budget:
+            tail.pop(0)
+        groups[0] = [marker, *tail]
 
     return [_fence(group) for group in groups]
 
