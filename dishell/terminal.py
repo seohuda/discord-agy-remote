@@ -16,6 +16,7 @@ import struct
 import sys
 import termios
 import tty
+import unicodedata
 
 
 class PtyProcess:
@@ -114,6 +115,13 @@ class PtyProcess:
             except OSError:
                 pass
 
+    def kill(self) -> None:
+        if self.pid is not None and self.exit_status is None:
+            try:
+                os.kill(self.pid, signal.SIGKILL)
+            except OSError:
+                pass
+
     def close(self) -> None:
         if self.master_fd is not None:
             try:
@@ -123,7 +131,9 @@ class PtyProcess:
             self.master_fd = None
 
 
-def effective_size(terminal_size, remote_cols: int, remote_active: bool):
+def effective_size(
+    terminal_size: tuple[int, int], remote_cols: int, remote_active: bool
+) -> tuple[int, int]:
     """Pick the size agy should render at.
 
     Discord's code block wraps at roughly 60 columns, so a normal 100-column
@@ -143,6 +153,37 @@ def _stdin_fd() -> int:
         return sys.stdin.fileno()
     except (OSError, ValueError, io.UnsupportedOperation):
         return -1
+
+
+def _stdout_fd() -> int:
+    """The real descriptor behind stdout, or ``-1`` when there is none."""
+    try:
+        return sys.stdout.fileno()
+    except (OSError, ValueError, io.UnsupportedOperation):
+        return -1
+
+
+def _char_width(ch: str) -> int:
+    if ord(ch) < 0x20 or ord(ch) == 0x7F:
+        return 0
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Cf"):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def _truncate_display_width(text: str, max_cols: int) -> str:
+    """Fit ``text`` into ``max_cols`` terminal columns, stripping controls."""
+    out: list[str] = []
+    used = 0
+    for ch in text:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            continue
+        width = _char_width(ch)
+        if used + width > max_cols:
+            break
+        out.append(ch)
+        used += width
+    return "".join(out)
 
 
 class LocalTerminal:
@@ -175,10 +216,18 @@ class LocalTerminal:
             self._saved = None
 
     def write(self, data: bytes) -> None:
-        try:
-            os.write(sys.stdout.fileno(), data)
-        except OSError:
-            pass
+        fd = _stdout_fd()
+        if fd < 0 or not data:
+            return
+        view = memoryview(data)
+        while view:
+            try:
+                written = os.write(fd, view)
+            except OSError:
+                return
+            if not written:
+                return
+            view = view[written:]
 
     def status(self, text: str = "") -> None:
         """Draw a one-line status on the bottom row, leaving the cursor alone.
@@ -189,7 +238,7 @@ class LocalTerminal:
         if not self.is_tty:
             return
         cols, rows = self.size()
-        payload = text[: max(cols - 1, 0)].encode("utf-8")
+        payload = _truncate_display_width(text, max(cols - 1, 0)).encode("utf-8")
         self.write(
             b"\x1b7"                       # save cursor
             + f"\x1b[{rows};1H".encode()   # bottom row

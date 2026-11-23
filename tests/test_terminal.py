@@ -1,8 +1,9 @@
+import io
 import select
 import sys
 import time
 
-from dishell.terminal import PtyProcess
+from dishell.terminal import LocalTerminal, PtyProcess, _truncate_display_width
 
 
 def drain(proc: PtyProcess, timeout: float = 10.0) -> bytes:
@@ -74,10 +75,18 @@ def test_resize_is_visible_to_the_child():
     proc = PtyProcess([sys.executable, "-c", code])
     proc.spawn(80, 24)
     try:
-        time.sleep(0.5)
-        proc.set_winsize(100, 30)
         deadline = time.monotonic() + 5
         seen = bytearray()
+        while time.monotonic() < deadline and b"ready" not in seen:
+            chunk = proc.read()
+            if chunk is None:
+                break
+            seen += chunk
+            time.sleep(0.02)
+        assert b"ready" in seen
+
+        proc.set_winsize(100, 30)
+        deadline = time.monotonic() + 5
         while time.monotonic() < deadline and b"(100, 30)" not in seen:
             chunk = proc.read()
             if chunk is None:
@@ -125,3 +134,16 @@ def test_missing_executable_exits_with_127():
         assert proc.reap() == 127
     finally:
         proc.close()
+
+
+def test_truncate_display_width_respects_wide_chars_and_strips_controls():
+    # Each Hangul syllable occupies 2 columns; 3 syllables = 6 columns.
+    assert _truncate_display_width("가나다라마", 7) == "가나다"
+    assert _truncate_display_width("ab\x1b[31mcd", 10) == "ab[31mcd"
+
+
+def test_local_terminal_write_ignores_non_fd_stdout(monkeypatch):
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    term = LocalTerminal(fd=-1)
+    term.write(b"hello")
+    term.notice("notice")
