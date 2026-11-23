@@ -67,3 +67,24 @@ def test_help():
 
 def test_blank_message_is_ignored():
     assert parse_remote_message("   \n ").kind == "error"
+
+
+def test_say_plain_text_forwards_verbatim_including_leading_slash():
+    action = parse_remote_message("/say /rc off")
+    assert action.kind == "text"
+    assert action.payload == b"/rc off\r"
+
+    multiline = parse_remote_message("/say line1\nline2")
+    assert multiline.kind == "text"
+    assert multiline.payload == b"\x1b[200~line1\nline2\x1b[201~\r"
+
+
+def test_say_without_text_returns_usage_error():
+    action = parse_remote_message("/say   ")
+    assert action.kind == "error"
+    assert "/say" in action.message
+
+
+def test_commands_accept_newline_or_tab_after_command_name():
+    assert parse_remote_message("/key\nesc").payload == b"\x1b"
+    assert parse_remote_message("/rc\toff").kind == "rc_off"

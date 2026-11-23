@@ -1,7 +1,9 @@
 """Slash command registration and routing, without touching the gateway."""
 
 import asyncio
+from unittest.mock import MagicMock
 
+import discord
 import pytest
 
 from dishell.bot import DishellBot, make_intents
@@ -18,8 +20,9 @@ class FakeResponse:
 
 
 class FakeInteraction:
-    def __init__(self, user_id=OWNER):
+    def __init__(self, user_id=OWNER, guild_id=None):
         self.user = type("User", (), {"id": user_id})()
+        self.guild_id = guild_id
         self.response = FakeResponse()
 
 
@@ -29,6 +32,8 @@ class FakeManager:
     def __init__(self):
         self.inputs: list[bytes] = []
         self.turned_off = False
+        self.handled_messages = []
+        self.sync_errors: list[Exception] = []
 
     def status_text(self) -> str:
         return "status!"
@@ -39,13 +44,17 @@ class FakeManager:
     def send_input(self, payload: bytes) -> None:
         self.inputs.append(payload)
 
+    async def handle_remote_message(self, message) -> None:
+        self.handled_messages.append(message)
+
+    def on_sync_error(self, exc: Exception) -> None:
+        self.sync_errors.append(exc)
+
 
 @pytest.fixture
 def bot():
     manager = FakeManager()
-    client = DishellBot(manager=manager)
-    client.manager = manager
-    return client
+    return DishellBot(manager=manager)
 
 
 def invoke(bot, name: str, interaction, **kwargs):
@@ -97,3 +106,60 @@ def test_a_stranger_gets_nothing_through(bot):
     invoke(bot, "key", interaction, keys="enter")
     assert "권한" in interaction.response.sent[0][0]
     assert bot.manager.inputs == []
+
+
+def test_slash_commands_are_rejected_outside_dms(bot):
+    interaction = FakeInteraction(user_id=OWNER, guild_id=999)
+    invoke(bot, "say", interaction, text="hello")
+    assert "DM" in interaction.response.sent[0][0]
+    assert bot.manager.inputs == []
+
+
+def test_long_say_and_key_truncate_reply_preview_under_discord_limit(bot):
+    long_text = "x" * 3000
+    interaction = FakeInteraction()
+    invoke(bot, "say", interaction, text=long_text)
+    reply, ephemeral = interaction.response.sent[0]
+    assert ephemeral is True
+    assert len(reply) < 2000
+    assert bot.manager.inputs == [long_text.encode("utf-8") + b"\r"]
+
+    long_keys = " ".join(["down"] * 500)
+    interaction2 = FakeInteraction()
+    invoke(bot, "key", interaction2, keys=long_keys)
+    assert len(interaction2.response.sent[0][0]) < 2000
+    assert bot.manager.inputs[-1] == b"\x1b[B" * 500
+
+
+def test_setup_hook_tolerates_tree_sync_http_error(bot, monkeypatch):
+    async def fail_sync():
+        resp = MagicMock(status=429, reason="Too Many Requests")
+        raise discord.HTTPException(resp, "rate limited")
+
+    monkeypatch.setattr(bot.tree, "sync", fail_sync)
+    asyncio.run(bot.setup_hook())
+    assert len(bot.manager.sync_errors) == 1
+
+
+def test_on_message_accepts_only_owner_dms(bot, monkeypatch):
+    bot_user = type("User", (), {"id": 1})()
+    monkeypatch.setattr(type(bot), "user", property(lambda self: bot_user))
+
+    dm_channel = MagicMock(spec=discord.DMChannel)
+    guild_channel = object()
+
+    def make_msg(author_id, channel):
+        return type(
+            "Msg",
+            (),
+            {"author": type("U", (), {"id": author_id})(), "channel": channel},
+        )()
+
+    asyncio.run(bot.on_message(make_msg(1, dm_channel)))         # self
+    asyncio.run(bot.on_message(make_msg(OWNER, guild_channel)))  # guild
+    asyncio.run(bot.on_message(make_msg(999, dm_channel)))       # stranger
+    assert bot.manager.handled_messages == []
+
+    owner_dm = make_msg(OWNER, dm_channel)
+    asyncio.run(bot.on_message(owner_dm))
+    assert bot.manager.handled_messages == [owner_dm]

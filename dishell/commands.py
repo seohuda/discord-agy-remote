@@ -1,14 +1,17 @@
 """Parsing of Discord DM content into actions against the local agy session.
 
-Only ``/rc``, ``/key`` and ``/help`` are intercepted. Every other message --
-including agy's own slash commands such as ``/model`` -- is forwarded to the
-PTY as-is. A leading ``//`` escapes one slash, so ``//rc off`` types the literal
-text ``/rc off`` into agy.
+Only ``/rc``, ``/key``, ``/say`` and ``/help`` are intercepted. Every other
+message -- including agy's own slash commands such as ``/model`` -- is
+forwarded to the PTY as-is. A leading ``//`` escapes one slash, so ``//rc off``
+types the literal text ``/rc off`` into agy.
 """
 
 from dataclasses import dataclass, field
+import re
 
 from .keys import UnknownKey, key_names, resolve_keys
+
+_COMMAND_RE = re.compile(r"^(\S+)(?:\s(.*))?$", re.DOTALL)
 
 HELP_TEXT = (
     "**discord-agy-remote**\n"
@@ -60,12 +63,20 @@ def parse_remote_message(content: str) -> Action:
     if text.startswith("//"):
         return text_action(text[1:])
 
-    head, _, rest = text.partition(" ")
-    head = head.lower()
+    match = _COMMAND_RE.match(text)
+    if match is None:
+        return text_action(text)
+    head = match.group(1).lower()
+    rest = match.group(2) or ""
     args = rest.split()
 
     if head == "/help":
         return Action(kind="help", message=HELP_TEXT)
+
+    if head == "/say":
+        if not rest.strip():
+            return Action(kind="error", message="사용법: `/say <텍스트>`")
+        return text_action(rest)
 
     if head == "/rc":
         sub = args[0].lower() if args else ""
