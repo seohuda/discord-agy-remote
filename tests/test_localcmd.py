@@ -120,3 +120,71 @@ def test_command_mixed_into_a_chunk_with_other_input():
 def test_newline_terminator_works_as_well_as_carriage_return():
     _, commands, _ = feed_all("/rc on\n")
     assert commands == ["/rc on"]
+
+
+def test_slash_mid_sentence_and_paths_are_never_held_or_executed():
+    filt = LocalCommandFilter()
+    out, cmds = filt.feed(b"src/rc/foo.py")
+    assert out == b"src/rc/foo.py"
+    assert cmds == []
+    assert filt.pending == b""
+
+    forwarded, commands, _ = feed_all("how does /rc on\r")
+    assert forwarded == b"how does /rc on\r"
+    assert commands == []
+
+
+def test_rc_without_space_releases_immediately_for_other_words():
+    filt = LocalCommandFilter()
+    out, _ = filt.feed(b"/rclone")
+    assert out == b"/rclone"
+    assert filt.pending == b""
+
+
+def test_bracketed_paste_never_triggers_local_commands():
+    pasted = b"\x1b[200~README:\n/rc on\nmore\x1b[201~\r"
+    filt = LocalCommandFilter()
+    forwarded, commands = filt.feed(pasted)
+    assert forwarded == pasted
+    assert commands == []
+
+    # After submitting the paste, a fresh local command works again.
+    out, commands = filt.feed(b"/rc on\r")
+    assert out == b""
+    assert commands == ["/rc on"]
+
+
+def test_control_and_escape_keys_never_enter_held_buffer():
+    filt = LocalCommandFilter()
+    out, _ = filt.feed(b"/rc ")
+    assert out == b""
+    out, _ = filt.feed(b"\x1b[D")
+    assert out == b"/rc \x1b[D"
+    assert filt.pending == b""
+
+
+def test_multibyte_backspace_erases_whole_character():
+    forwarded, commands, filt = feed_all("/rc 한글\x7f")
+    assert forwarded == b""
+    assert commands == []
+    assert filt.pending == "/rc 한".encode("utf-8")
+
+
+def test_command_works_after_backspacing_to_empty_line_or_pressing_esc():
+    forwarded, commands, _ = feed_all("ab\x7f\x7f/rc on\r")
+    assert forwarded == b"ab\x7f\x7f"
+    assert commands == ["/rc on"]
+
+    forwarded, commands, _ = feed_all("\x1b/rc on\r")
+    assert forwarded == b"\x1b"
+    assert commands == ["/rc on"]
+
+    forwarded, commands, _ = feed_all("\x1b[B/rc status\r")
+    assert forwarded == b"\x1b[B"
+    assert commands == ["/rc status"]
+
+
+def test_extra_internal_spaces_are_accepted():
+    forwarded, commands, _ = feed_all("/rc   on\r")
+    assert forwarded == b""
+    assert commands == ["/rc on"]
